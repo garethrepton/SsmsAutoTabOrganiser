@@ -1,0 +1,35 @@
+## VS / .NET
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+*.user
+*.suo
+*.cache
+.vs/
+.idea/
+
+## VSIX build outputs
+*.vsix
+*.lock.json
+*.nupkg
+
+## NuGet
+packages/
+*.nuget.props
+*.nuget.targets
+
+## Local config
+appsettings.local.json
+*.local.json
+
+## Source.zip dropped here originally
+files.zip
+Files.zip
+
+# Project-specific
+.idea/
+appsettings.local.json
+*.local.json
+files.zip
+Files.zip

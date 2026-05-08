@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+
+  <Commands package="guidAutoTabOrganiserPackage">
+
+    <Groups>
+      <Group guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" />
+      </Group>
+      <Group guid="guidAutoTabOrganiserCmdSet" id="TabHistoryViewGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_VIEW" />
+      </Group>
+    </Groups>
+
+    <Buttons>
+      <Button guid="guidAutoTabOrganiserCmdSet" id="HelloCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
+        <Strings><ButtonText>Tab History: Hello</ButtonText></Strings>
+      </Button>
+      <Button guid="guidAutoTabOrganiserCmdSet" id="ShowToolWindowCommandId" priority="0x0110" type="Button">
+        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryViewGroup" />
+        <Strings><ButtonText>Tab Organiser</ButtonText></Strings>
+      </Button>
+      <Button guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId" priority="0x0120" type="Button">
+        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
+        <Strings><ButtonText>Tab History: Snapshot Now</ButtonText></Strings>
+      </Button>
+      <Button guid="guidAutoTabOrganiserCmdSet" id="OpenSettingsCommandId" priority="0x0140" type="Button">
+        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
+        <Strings><ButtonText>Tab History: Open Settings File</ButtonText></Strings>
+      </Button>
+    </Buttons>
+
+  </Commands>
+
+  <KeyBindings>
+    <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId"
+                editor="guidVSStd97" key1="H" mod1="Control Alt" key2="S" />
+  </KeyBindings>
+
+  <Symbols>
+    <GuidSymbol name="guidAutoTabOrganiserPackage" value="{b4f9e3d1-7c2a-4f8e-9b1a-6e3d5c8f7a2b}" />
+    <GuidSymbol name="guidVSStd97" value="{5efc7975-14bc-11cf-9b2b-00aa00573819}" />
+
+    <GuidSymbol name="guidAutoTabOrganiserCmdSet" value="{c5a8d4e2-6b1f-4d9e-8c2a-7d4e6f9b3c1a}">
+      <IDSymbol name="TabHistoryToolsGroup" value="0x1020" />
+      <IDSymbol name="TabHistoryViewGroup"  value="0x1021" />
+
+      <IDSymbol name="HelloCommandId"             value="0x0100" />
+      <IDSymbol name="ShowToolWindowCommandId"    value="0x0101" />
+      <IDSymbol name="SnapshotNowCommandId"       value="0x0102" />
+      <IDSymbol name="ShowThisTabHistoryCommandId" value="0x0103" />
+      <IDSymbol name="OpenSettingsCommandId"      value="0x0104" />
+    </GuidSymbol>
+  </Symbols>
+
+</CommandTable>

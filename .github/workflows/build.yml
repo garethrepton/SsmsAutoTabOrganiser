@@ -1,0 +1,59 @@
+name: Build VSIX
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    env:
+      Configuration: Release
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: msbuild AutoTabOrganiser.sln -t:Restore -p:Configuration=${{ env.Configuration }}
+
+      - name: Build
+        run: msbuild AutoTabOrganiser.sln -p:Configuration=${{ env.Configuration }}
+
+      - name: Test
+        run: dotnet test tests/AutoTabOrganiser.Tests/AutoTabOrganiser.Tests.csproj -c ${{ env.Configuration }} --no-build --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: AutoTabOrganiser-vsix
+          path: src/AutoTabOrganiser/bin/${{ env.Configuration }}/net472/AutoTabOrganiser.vsix
+          if-no-files-found: error
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: '**/TestResults/*.trx'
+          if-no-files-found: ignore

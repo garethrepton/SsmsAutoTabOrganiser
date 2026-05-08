@@ -1,0 +1,109 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+namespace AutoTabOrganiser.Git
+{
+    internal enum GitFileStatus { Unknown, NotInRepo, Untracked, Modified, Staged, Clean }
+
+    /// <summary>
+    /// Resolves git status for a batch of file paths by grouping them by repo root and shelling
+    /// out to `git status --porcelain` once per repo. Cached for ~30s to keep things cheap.
+    /// </summary>
+    internal sealed class GitStatusResolver
+    {
+        private readonly object _gate = new object();
+        private readonly Dictionary<string, (DateTime when, Dictionary<string, GitFileStatus> map)> _byRepo
+            = new Dictionary<string, (DateTime, Dictionary<string, GitFileStatus>)>(StringComparer.OrdinalIgnoreCase);
+        private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(2);
+
+        public Dictionary<string, GitFileStatus> Resolve(IEnumerable<string> filePaths)
+        {
+            var result = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
+            var byRepo = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var path in filePaths.Where(p => !string.IsNullOrEmpty(p)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!File.Exists(path)) { result[path] = GitFileStatus.NotInRepo; continue; }
+                var repo = GitHelper.FindRepoRoot(Path.GetDirectoryName(path));
+                if (repo == null) { result[path] = GitFileStatus.NotInRepo; continue; }
+                if (!byRepo.TryGetValue(repo, out var list)) { list = new List<string>(); byRepo[repo] = list; }
+                list.Add(path);
+            }
+
+            foreach (var pair in byRepo)
+            {
+                var statusMap = GetOrRefreshRepoStatus(pair.Key);
+                foreach (var p in pair.Value)
+                {
+                    string rel;
+                    try { rel = Path.GetFullPath(p).Substring(Path.GetFullPath(pair.Key).Length).TrimStart('\\', '/').Replace('\\', '/'); }
+                    catch { rel = p; }
+                    result[p] = statusMap != null && statusMap.TryGetValue(rel, out var st) ? st : GitFileStatus.Clean;
+                }
+            }
+            return result;
+        }
+
+        private Dictionary<string, GitFileStatus> GetOrRefreshRepoStatus(string repoRoot)
+        {
+            lock (_gate)
+            {
+                if (_byRepo.TryGetValue(repoRoot, out var entry) && DateTime.UtcNow - entry.when < CacheTtl)
+                    return entry.map;
+            }
+            var fresh = QueryRepoStatus(repoRoot);
+            lock (_gate) _byRepo[repoRoot] = (DateTime.UtcNow, fresh);
+            return fresh;
+        }
+
+        private static Dictionary<string, GitFileStatus> QueryRepoStatus(string repoRoot)
+        {
+            var map = new Dictionary<string, GitFileStatus>(StringComparer.Ordinal);
+            try
+            {
+                var psi = new ProcessStartInfo("git", "status --porcelain -uall")
+                {
+                    WorkingDirectory = repoRoot,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8
+                };
+                using (var p = Process.Start(psi))
+                {
+                    if (p == null) return map;
+                    var stdout = p.StandardOutput.ReadToEnd();
+                    p.WaitForExit(2000);
+                    foreach (var raw in stdout.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        var line = raw.TrimEnd('\r');
+                        if (line.Length < 4) continue;
+                        var staged   = line[0];
+                        var unstaged = line[1];
+                        var path     = line.Substring(3).Trim('"');
+                        // For renames: "R  old -> new"
+                        var arrow = path.IndexOf(" -> ", StringComparison.Ordinal);
+                        if (arrow > 0) path = path.Substring(arrow + 4);
+                        var status = GitFileStatus.Clean;
+                        if (staged == '?' && unstaged == '?') status = GitFileStatus.Untracked;
+                        else if (unstaged != ' ' && unstaged != '\0') status = GitFileStatus.Modified;
+                        else if (staged != ' ' && staged != '\0')    status = GitFileStatus.Staged;
+                        map[path] = status;
+                    }
+                }
+            }
+            catch { }
+            return map;
+        }
+
+        public void Invalidate()
+        {
+            lock (_gate) _byRepo.Clear();
+        }
+    }
+}
