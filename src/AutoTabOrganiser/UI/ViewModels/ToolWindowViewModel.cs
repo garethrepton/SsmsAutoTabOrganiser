@@ -39,6 +39,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         private readonly Func<SnapshotRecord, Task> _openAsNewSnapshot;
         private readonly Func<List<string>, List<string>, List<string>> _showTagPicker;
         private readonly Func<string, string> _promptCommitMessage;
+        private readonly Action<string, string, GitFileStatus> _showGitDiff;
         private readonly Action<string> _showInfo;
         private readonly Action _onSavePromptShown;
         private readonly GitStatusResolver _gitResolver = new GitStatusResolver();
@@ -195,6 +196,7 @@ namespace AutoTabOrganiser.UI.ViewModels
 
         public ICommand StageStoredQueryCommand { get; }
         public ICommand CommitStoredQueryCommand { get; }
+        public ICommand DiffStoredQueryCommand { get; }
         public ICommand CommitAllStoredQueriesCommand { get; }
         public ICommand OpenStoredQueriesFolderCommand { get; }
         public ICommand OpenStoredQueriesTerminalCommand { get; }
@@ -216,6 +218,7 @@ namespace AutoTabOrganiser.UI.ViewModels
                                    Func<SnapshotRecord, Task> openAsNewSnapshot,
                                    Func<List<string>, List<string>, List<string>> showTagPicker,
                                    Func<string, string> promptCommitMessage,
+                                   Action<string, string, GitFileStatus> showGitDiff,
                                    Action<string> showInfo,
                                    Action onSavePromptShown,
                                    Dispatcher dispatcher)
@@ -228,6 +231,7 @@ namespace AutoTabOrganiser.UI.ViewModels
             _openAsNewSnapshot = openAsNewSnapshot;
             _showTagPicker = showTagPicker;
             _promptCommitMessage = promptCommitMessage;
+            _showGitDiff = showGitDiff;
             _showInfo = showInfo;
             _onSavePromptShown = onSavePromptShown;
             _dispatcher = dispatcher ?? Application.Current?.Dispatcher;
@@ -252,6 +256,7 @@ namespace AutoTabOrganiser.UI.ViewModels
 
             StageStoredQueryCommand          = new RelayCommand(p => StageStoredQuery(p as StoredQueryRowViewModel));
             CommitStoredQueryCommand         = new RelayCommand(p => CommitStoredQuery(p as StoredQueryRowViewModel));
+            DiffStoredQueryCommand           = new RelayCommand(p => DiffStoredQuery(p as StoredQueryRowViewModel));
             CommitAllStoredQueriesCommand    = new RelayCommand(CommitAllStoredQueries);
             OpenStoredQueriesFolderCommand   = new RelayCommand(OpenStoredQueriesFolder);
             OpenStoredQueriesTerminalCommand = new RelayCommand(OpenStoredQueriesTerminal);
@@ -1192,6 +1197,66 @@ namespace AutoTabOrganiser.UI.ViewModels
             OptimisticSetGitStatus(vm.FilePath, vm.Source?.TabId, GitFileStatus.Clean);
             _gitResolver.Invalidate();
             Info("Committed " + Path.GetFileName(vm.FilePath));
+        }
+
+        /// <summary>
+        /// Resolve the diff for <paramref name="vm"/>'s file against HEAD off the UI thread,
+        /// then hand the text to <see cref="_showGitDiff"/> for the view to display.
+        /// Untracked files don't have a HEAD-vs-working-tree diff, so we synthesize a
+        /// "+"-prefixed diff from the file contents instead.
+        /// </summary>
+        private void DiffStoredQuery(StoredQueryRowViewModel vm)
+        {
+            if (vm == null || string.IsNullOrEmpty(vm.FilePath)) return;
+            if (_showGitDiff == null) return;
+
+            var path = vm.FilePath;
+            var status = vm.Status;
+            var fileName = Path.GetFileName(path);
+
+            Task.Run(() =>
+            {
+                string diff;
+                try
+                {
+                    if (status == GitFileStatus.Untracked)
+                    {
+                        diff = SyntheticUntrackedDiff(path);
+                    }
+                    else
+                    {
+                        var r = GitHelper.Diff(path, _log);
+                        if (!string.IsNullOrEmpty(r.Error))
+                            diff = "git diff failed: " + r.Error;
+                        else if (r.ExitCode != 0)
+                            diff = "git diff exited " + r.ExitCode + ":\n" + (r.StdErr ?? r.StdOut ?? "");
+                        else
+                            diff = string.IsNullOrEmpty(r.StdOut)
+                                ? "(no changes vs HEAD)"
+                                : r.StdOut;
+                    }
+                }
+                catch (Exception ex) { diff = "Error: " + ex.Message; }
+
+                Marshal(() => _showGitDiff(fileName, diff ?? "", status));
+            });
+        }
+
+        /// <summary>Build a "+"-prefixed diff for an untracked file from its on-disk content.</summary>
+        private static string SyntheticUntrackedDiff(string filePath)
+        {
+            if (!File.Exists(filePath)) return "[file not found: " + filePath + "]";
+            string content;
+            try { content = File.ReadAllText(filePath); }
+            catch (Exception ex) { return "Could not read file: " + ex.Message; }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("--- /dev/null");
+            sb.AppendLine("+++ " + filePath);
+            sb.AppendLine("@@ untracked file @@");
+            foreach (var line in content.Split(new[] { '\n' }, StringSplitOptions.None))
+                sb.Append('+').AppendLine(line.TrimEnd('\r'));
+            return sb.ToString();
         }
 
         private void CommitAllStoredQueries()

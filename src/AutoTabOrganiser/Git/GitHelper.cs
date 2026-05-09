@@ -77,6 +77,17 @@ namespace AutoTabOrganiser.Git
             return Run(dir, $"status --porcelain \"{filePath}\"", log);
         }
 
+        /// <summary>
+        /// Diff a file against HEAD (covers both staged and unstaged changes). Untracked
+        /// files return empty stdout — caller should fall back to a synthetic "all-added"
+        /// diff for those, since git refuses to diff a path that isn't in HEAD or the index.
+        /// </summary>
+        public static GitResult Diff(string filePath, Logger log)
+        {
+            var dir = Path.GetDirectoryName(filePath);
+            return Run(dir, $"diff HEAD -- \"{filePath}\"", log);
+        }
+
         public static GitResult Run(string workingDir, string args, Logger log)
         {
             var result = new GitResult();
