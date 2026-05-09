@@ -283,15 +283,18 @@ namespace AutoTabOrganiser.UI.ViewModels
             GitAddCommand        = new RelayCommand(p => RunGit((p as TabRowViewModel)?.Source, "add",    path => GitHelper.Add(path, _log)));
             GitCommitAutoCommand = new RelayCommand(p => RunGit((p as TabRowViewModel)?.Source, "commit", path =>
             {
+                var name = Path.GetFileNameWithoutExtension(path);
+                var msg = $"Update {name}";
+                if (!ValidateCommitMessage(msg)) return new GitResult { ExitCode = 1, Error = "(silent)" };
                 var added = GitHelper.Add(path, _log);
                 if (!added.Ok) return added;
-                var name = Path.GetFileNameWithoutExtension(path);
-                return GitHelper.Commit(path, $"Update {name}", _log);
+                return GitHelper.Commit(path, msg, _log);
             }));
             GitCommitCommand = new RelayCommand(p => RunGit((p as TabRowViewModel)?.Source, "commit", path =>
             {
                 var msg = _promptCommitMessage?.Invoke(Path.GetFileName(path));
-                if (msg == null) return new GitResult { Error = "cancelled" };
+                if (msg == null) return new GitResult { ExitCode = 1, Error = "(silent)" };
+                if (!ValidateCommitMessage(msg)) return new GitResult { ExitCode = 1, Error = "(silent)" };
                 var added = GitHelper.Add(path, _log);
                 if (!added.Ok) return added;
                 return GitHelper.Commit(path, msg, _log);
@@ -1176,6 +1179,26 @@ namespace AutoTabOrganiser.UI.ViewModels
 
         // ---- stored queries / git ----
 
+        /// <summary>
+        /// Returns true if <paramref name="msg"/> satisfies the minimum-length rule from
+        /// <see cref="GitSettings"/>. On failure, surfaces a one-liner via <see cref="Info"/>
+        /// explaining why and returns false so callers can bail before invoking git. Trims
+        /// whitespace before counting so "    " doesn't pass a 4-char minimum.
+        /// </summary>
+        private bool ValidateCommitMessage(string msg)
+        {
+            var s = _settings?.Load();
+            var g = s?.Git;
+            if (g == null || !g.EnforceMinCommitMessage) return true;
+            var min = g.MinCommitMessageLength;
+            if (min <= 0) return true;
+            var len = (msg ?? "").Trim().Length;
+            if (len >= min) return true;
+            Info($"Commit message must be at least {min} character{(min == 1 ? "" : "s")} (got {len}). " +
+                 $"Disable in settings.json under git.enforceMinCommitMessage.");
+            return false;
+        }
+
         private void StageStoredQuery(StoredQueryRowViewModel vm)
         {
             if (vm == null) return;
@@ -1203,6 +1226,7 @@ namespace AutoTabOrganiser.UI.ViewModels
             var msg = (CommitMessage ?? "").Trim();
             if (string.IsNullOrEmpty(msg))
                 msg = "Update " + (vm.Source.Name ?? Path.GetFileNameWithoutExtension(vm.FilePath));
+            if (!ValidateCommitMessage(msg)) return;
 
             var added = GitHelper.Add(vm.FilePath, _log);
             if (!added.Ok) { Info("git add failed: " + (added.StdErr ?? added.Error ?? added.StdOut)); return; }
@@ -1281,6 +1305,7 @@ namespace AutoTabOrganiser.UI.ViewModels
 
             var msg = (CommitMessage ?? "").Trim();
             if (string.IsNullOrEmpty(msg)) msg = "Update stored queries";
+            if (!ValidateCommitMessage(msg)) return;
 
             var byRepo = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             foreach (var r in rows)
@@ -1418,6 +1443,10 @@ namespace AutoTabOrganiser.UI.ViewModels
                             : !string.IsNullOrEmpty(r.StdErr) ? r.StdErr
                             : !string.IsNullOrEmpty(r.StdOut) ? r.StdOut
                             : ("exit code " + r.ExitCode);
+                    // Sentinels for user-initiated stops (cancel from prompt, validation
+                    // rejection): the lambda already informed the user via Info, don't
+                    // pile on a second "git X failed:" line.
+                    if (why == "(silent)") return;
                     Info($"git {verb} failed: {why}");
                     return;
                 }

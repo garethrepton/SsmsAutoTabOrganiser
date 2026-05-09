@@ -45,6 +45,14 @@ namespace AutoTabOrganiser.Settings
         public string TreeFolder { get; set; } = "Saved Scripts";
     }
 
+    internal sealed class GitSettings
+    {
+        /// <summary>Reject commits whose trimmed message is shorter than this many characters.</summary>
+        public int MinCommitMessageLength { get; set; } = 5;
+        /// <summary>Toggle for the minimum-length check. Default on so accidental "x" commits don't slip through.</summary>
+        public bool EnforceMinCommitMessage { get; set; } = true;
+    }
+
     internal sealed class UiSettings
     {
         public string       LastSelectedTabId   { get; set; }
@@ -72,6 +80,7 @@ namespace AutoTabOrganiser.Settings
         public SnapshottingSettings Snapshotting  { get; set; } = new SnapshottingSettings();
         public PrivacySettings      Privacy       { get; set; } = new PrivacySettings();
         public SavedScriptsSettings SavedScripts  { get; set; } = new SavedScriptsSettings();
+        public GitSettings          Git           { get; set; } = new GitSettings();
         public UiSettings           Ui            { get; set; } = new UiSettings();
     }
 }
