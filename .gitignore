@@ -33,3 +33,6 @@ appsettings.local.json
 *.local.json
 files.zip
 Files.zip
+
+# Claude Code project config (skills, hooks, settings) — local-only.
+.claude/

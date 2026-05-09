@@ -31,5 +31,7 @@ namespace AutoTabOrganiser.Storage
         public bool IsOpen { get; set; }
         public bool IsDirty { get; set; }
         public string Desc { get; set; }
+        public string Server { get; set; }       // last-known SSMS server name
+        public string Database { get; set; }     // last-known SSMS database name
     }
 }

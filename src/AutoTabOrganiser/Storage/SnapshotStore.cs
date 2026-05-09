@@ -25,6 +25,7 @@ namespace AutoTabOrganiser.Storage
         public string Root => _root;
         public string SnapshotsDir => _snapshotsDir;
         public string DbPath => _dbPath;
+        public bool FtsAvailable => _ftsAvailable;
 
         private static int s_sqliteInit;
 
@@ -76,6 +77,12 @@ namespace AutoTabOrganiser.Storage
             // SQLite can't drop NOT NULL in place; if we hit that we leave the legacy rows alone
             // and ensure new rows still write a non-null disk_path of empty string.
 
+            // Connection denormalised onto tabs_latest so the side panel can render it
+            // without a JOIN (which would re-introduce ambiguous-column errors).
+            EnsureColumn("tabs_latest", "server",   "TEXT");
+            EnsureColumn("tabs_latest", "database", "TEXT");
+            BackfillTabsLatestConnection();
+
             EnsureFtsTable();
         }
 
@@ -107,6 +114,28 @@ namespace AutoTabOrganiser.Storage
                 _ftsAvailable = false;
                 _log?.Warn("FTS5 unavailable — content search disabled. " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// One-shot copy of server/database from each tab's latest snapshot into the
+        /// denormalised columns on <c>tabs_latest</c>. Idempotent — only fills rows where
+        /// either column is currently NULL, so re-running on subsequent loads is a cheap no-op.
+        /// </summary>
+        private void BackfillTabsLatestConnection()
+        {
+            try
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText =
+                        "UPDATE tabs_latest " +
+                        "SET server   = COALESCE(server,   (SELECT server   FROM snapshots WHERE snapshots.id = tabs_latest.latest_snapshot_id)), " +
+                        "    database = COALESCE(database, (SELECT database FROM snapshots WHERE snapshots.id = tabs_latest.latest_snapshot_id)) " +
+                        "WHERE server IS NULL OR database IS NULL;";
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex) { _log?.Warn("Backfill connection columns failed: " + ex.Message); }
         }
 
         private void EnsureColumn(string table, string column, string typeDecl)
@@ -207,16 +236,19 @@ namespace AutoTabOrganiser.Storage
                     {
                         cmd.Transaction = tx;
                         cmd.CommandText =
-                            "INSERT INTO tabs_latest(tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc) " +
-                            "VALUES($tab,$sid,$fld,$nm,$tg,$ts,1,0,$dsc) " +
+                            "INSERT INTO tabs_latest(tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database) " +
+                            "VALUES($tab,$sid,$fld,$nm,$tg,$ts,1,0,$dsc,$sv,$db) " +
                             "ON CONFLICT(tab_id) DO UPDATE SET " +
                             "  latest_snapshot_id=excluded.latest_snapshot_id, " +
                             "  folder=excluded.folder, " +
                             "  name=excluded.name, " +
                             "  tags_csv=excluded.tags_csv, " +
                             "  ts=excluded.ts, " +
+                            "  is_open=1, " +
                             "  is_dirty=0, " +
-                            "  desc=excluded.desc;";
+                            "  desc=excluded.desc, " +
+                            "  server=excluded.server, " +
+                            "  database=excluded.database;";
                         Add(cmd, "$tab", r.TabId);
                         Add(cmd, "$sid", r.Id);
                         Add(cmd, "$fld", r.Folder);
@@ -224,6 +256,8 @@ namespace AutoTabOrganiser.Storage
                         Add(cmd, "$tg", tagsCsv);
                         Add(cmd, "$ts", r.Ts);
                         Add(cmd, "$dsc", r.Desc);
+                        Add(cmd, "$sv", r.Server);
+                        Add(cmd, "$db", r.Database);
                         cmd.ExecuteNonQuery();
                     }
 
@@ -320,8 +354,12 @@ namespace AutoTabOrganiser.Storage
             {
                 using (var cmd = _conn.CreateCommand())
                 {
+                    // server/database are denormalised onto tabs_latest (kept fresh by
+                    // WriteSnapshot's INSERT/ON CONFLICT) so this is a single-table query;
+                    // a JOIN here would re-introduce ambiguous-column errors against the
+                    // unqualified column names the search-query parser emits.
                     cmd.CommandText =
-                        "SELECT tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc " +
+                        "SELECT tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database " +
                         "FROM tabs_latest " +
                         (string.IsNullOrEmpty(sqlWhere) ? "" : "WHERE " + sqlWhere + " ") +
                         "ORDER BY " + (string.IsNullOrEmpty(orderBy) ? "ts DESC" : orderBy) + ";";
@@ -343,7 +381,9 @@ namespace AutoTabOrganiser.Storage
                                 Ts = rd.GetInt64(5),
                                 IsOpen = rd.GetInt32(6) != 0,
                                 IsDirty = rd.GetInt32(7) != 0,
-                                Desc = rd.IsDBNull(8) ? null : rd.GetString(8)
+                                Desc = rd.IsDBNull(8) ? null : rd.GetString(8),
+                                Server = rd.IsDBNull(9) ? null : rd.GetString(9),
+                                Database = rd.IsDBNull(10) ? null : rd.GetString(10),
                             });
                         }
                     }

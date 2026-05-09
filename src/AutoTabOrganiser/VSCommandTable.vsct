@@ -32,6 +32,14 @@
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
         <Strings><ButtonText>Tab History: Open Settings File</ButtonText></Strings>
       </Button>
+      <Button guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId" priority="0x0150" type="Button">
+        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
+        <Strings><ButtonText>Tab History: Quick Switcher</ButtonText></Strings>
+      </Button>
+      <Button guid="guidAutoTabOrganiserCmdSet" id="TagColoursCommandId" priority="0x0170" type="Button">
+        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
+        <Strings><ButtonText>Tab History: Configure Tag Colours…</ButtonText></Strings>
+      </Button>
     </Buttons>
 
   </Commands>
@@ -39,6 +47,10 @@
   <KeyBindings>
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId"
                 editor="guidVSStd97" key1="H" mod1="Control Alt" key2="S" />
+    <!-- Ctrl+P opens the quick switcher. SSMS doesn't bind Ctrl+P globally, so this
+         doesn't fight a built-in editor command the way Ctrl+T did. -->
+    <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
+                editor="guidVSStd97" key1="P" mod1="Control" />
   </KeyBindings>
 
   <Symbols>
@@ -54,6 +66,8 @@
       <IDSymbol name="SnapshotNowCommandId"       value="0x0102" />
       <IDSymbol name="ShowThisTabHistoryCommandId" value="0x0103" />
       <IDSymbol name="OpenSettingsCommandId"      value="0x0104" />
+      <IDSymbol name="QuickSwitcherCommandId"     value="0x0105" />
+      <IDSymbol name="TagColoursCommandId"        value="0x0107" />
     </GuidSymbol>
   </Symbols>
 

@@ -101,6 +101,13 @@ namespace AutoTabOrganiser.Metadata
                 case "id":
                     meta.Id = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
                     break;
+                case "server":
+                    meta.Server = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+                    break;
+                case "database":
+                case "db":
+                    meta.Database = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+                    break;
                 case "nosnapshot":
                     meta.NoSnapshot = true;
                     break;

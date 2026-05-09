@@ -60,6 +60,20 @@ namespace AutoTabOrganiser.Metadata
             return SetLeadingKey(text, "id", id.Trim());
         }
 
+        /// <summary>Inserts or replaces <c>-- @server: &lt;value&gt;</c>. Empty value removes nothing — caller should skip the call instead.</summary>
+        public static string SetServer(string text, string server)
+        {
+            if (server == null) server = string.Empty;
+            return SetLeadingKey(text, "server", server.Trim());
+        }
+
+        /// <summary>Inserts or replaces <c>-- @database: &lt;value&gt;</c>.</summary>
+        public static string SetDatabase(string text, string database)
+        {
+            if (database == null) database = string.Empty;
+            return SetLeadingKey(text, "database", database.Trim());
+        }
+
         /// <summary>
         /// Inserts or replaces a <c>-- @key: value</c> line inside the leading comment block. If the
         /// document has no leading comment block, prepends a fresh single-line block + blank-line separator.

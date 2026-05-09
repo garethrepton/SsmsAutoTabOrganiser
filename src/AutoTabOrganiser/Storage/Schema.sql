@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS tabs_latest (
   ts                  INTEGER NOT NULL,
   is_open             INTEGER NOT NULL DEFAULT 0,
   is_dirty            INTEGER NOT NULL DEFAULT 0,
-  desc                TEXT
+  desc                TEXT,
+  server              TEXT,    -- denormalised from latest snapshot for cheap rendering
+  database            TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_tabs_latest_ts    ON tabs_latest(ts DESC);
 CREATE INDEX IF NOT EXISTS ix_tabs_latest_name  ON tabs_latest(name COLLATE NOCASE);

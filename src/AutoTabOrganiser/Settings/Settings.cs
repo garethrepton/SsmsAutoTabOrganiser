@@ -11,7 +11,9 @@ namespace AutoTabOrganiser.Settings
 
     internal sealed class SnapshottingSettings
     {
-        public int  EditDebounceSeconds    { get; set; } = 5;
+        // 1s feels live without trashing the index on every keystroke. Floor inside
+        // SnapshotPipeline allows users to tune lower for stored-queries workflows.
+        public int  EditDebounceSeconds    { get; set; } = 1;
         public int  FlushIntervalSeconds   { get; set; } = 60;
         public bool AutoInjectId           { get; set; } = true;
         public bool AutoTagInjectIntoHeader { get; set; } = true;

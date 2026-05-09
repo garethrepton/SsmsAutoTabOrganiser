@@ -68,13 +68,30 @@ namespace AutoTabOrganiser.Tracking
             if (meta.NoSnapshot) return;
 
             var (server, database) = ConnectionExtractor.FromWindowTitle(_getWindowTitle?.Invoke());
+
+            // Fall back to the file's @server / @database if the SSMS title didn't expose
+            // a connection (e.g. the user opened a saved script and hasn't connected yet).
+            // The live title still wins when present.
+            if (string.IsNullOrEmpty(server) && !string.IsNullOrEmpty(meta.Server)) server = meta.Server;
+            if (string.IsNullOrEmpty(database) && !string.IsNullOrEmpty(meta.Database)) database = meta.Database;
+
             if (IsServerDenied(server, settings)) return;
 
             var hash = Hashing.Sha256Hex(text);
             var nowMs = Environment.TickCount;
 
-            // saved/closed: bypass dedup (always retain, per spec).
-            bool force = reason == "saved" || reason == "closed";
+            // saved/closed/first: bypass dedup and debounce. "first" is fired by the tracker as
+            // soon as a tab attaches, so a brand-new tab lands in the side panel immediately
+            // rather than after the edit-debounce window. Skip "first" on empty content so a
+            // blank untitled tab doesn't create a useless side-panel entry.
+            bool force = reason == "saved" || reason == "closed" || reason == "first";
+            if (reason == "first" && string.IsNullOrWhiteSpace(text)) return;
+
+            // First-time write for this tab: also force-immediate. Catches the brand-new
+            // untitled tab that was empty at attach (so the "first" reason was skipped) and
+            // now has content via polling — without this it sits in the debounce window for
+            // ~5s before appearing in the side panel.
+            if (_lastSnapshotHash == null && !string.IsNullOrWhiteSpace(text)) force = true;
 
             if (!force && string.Equals(hash, _lastSnapshotHash, StringComparison.Ordinal))
             {
@@ -92,7 +109,9 @@ namespace AutoTabOrganiser.Tracking
                     return;
                 }
 
-                var debounceMs = Math.Max(2000, settings.Snapshotting.EditDebounceSeconds * 1000);
+                // Floor was 2s — too slow when iterating on a stored query. 200ms is the
+                // smallest setting that doesn't make the SQLite index churn on every keystroke.
+                var debounceMs = Math.Max(200, settings.Snapshotting.EditDebounceSeconds * 1000);
                 var flushMs    = Math.Max(15000, settings.Snapshotting.FlushIntervalSeconds * 1000);
 
                 bool stableLongEnough = (nowMs - _pendingFirstSeenMs) >= debounceMs;

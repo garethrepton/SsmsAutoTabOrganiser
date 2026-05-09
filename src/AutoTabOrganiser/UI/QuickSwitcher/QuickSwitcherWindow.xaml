@@ -1,0 +1,166 @@
+<Window x:Class="AutoTabOrganiser.UI.QuickSwitcher.QuickSwitcherWindow"
+        x:Name="RootWindow"
+        x:ClassModifier="internal"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vsui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
+        xmlns:imaging="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.Imaging"
+        xmlns:catalog="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.ImageCatalog"
+        xmlns:conv="clr-namespace:AutoTabOrganiser.UI.Converters"
+        Title="Switch tab"
+        WindowStartupLocation="CenterOwner"
+        WindowStyle="None"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        AllowsTransparency="False"
+        SizeToContent="Manual"
+        Width="640" Height="440"
+        Topmost="True"
+        Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+        Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
+        FontFamily="Segoe UI" FontSize="13"
+        PreviewKeyDown="OnWindow_PreviewKeyDown">
+
+    <Window.Resources>
+        <conv:StringToImageMonikerConverter x:Key="StringToMoniker" />
+        <conv:BoolToVisibilityConverter     x:Key="BoolToVis" />
+
+        <Style x:Key="MutedText" TargetType="TextBlock">
+            <Setter Property="Opacity" Value="0.6" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
+        </Style>
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBackgroundBrushKey}}" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxTextBrushKey}}" />
+            <Setter Property="CaretBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxTextBrushKey}}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBorderBrushKey}}" />
+            <Setter Property="Padding" Value="6,4" />
+        </Style>
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}" />
+        </Style>
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource {x:Static vsui:CommonControlsColors.ButtonHoverBrushKey}}" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource {x:Static vsui:TreeViewColors.SelectedItemActiveBrushKey}}" />
+                    <Setter Property="Foreground" Value="{DynamicResource {x:Static vsui:TreeViewColors.SelectedItemActiveTextBrushKey}}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <DataTemplate x:Key="TagChipTemplate">
+            <Border Background="{Binding Brush}" CornerRadius="7" Padding="6,1"
+                    Margin="0,0,4,0" SnapsToDevicePixels="True">
+                <TextBlock Text="{Binding Text}" FontSize="10" FontWeight="SemiBold"
+                           Foreground="{Binding Foreground}" />
+            </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="ResultRowTemplate">
+            <Border x:Name="RowOuter" BorderThickness="3,0,0,0" BorderBrush="Transparent" Padding="6,0,0,0">
+                <Grid Background="Transparent" ToolTip="{Binding TooltipText}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Ellipse Grid.Column="0" Width="8" Height="8" Margin="0,0,8,0"
+                             VerticalAlignment="Center"
+                             Fill="{DynamicResource {x:Static vsui:EnvironmentColors.AccentMediumBrushKey}}"
+                             Visibility="{Binding IsOpen, Converter={StaticResource BoolToVis}}" />
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="TitleText" Text="{Binding Title}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding Subtitle}" Style="{StaticResource MutedText}"
+                                   FontSize="11" TextTrimming="CharacterEllipsis"
+                                   Visibility="{Binding HasSubtitle, Converter={StaticResource BoolToVis}}" />
+                    </StackPanel>
+
+                    <!-- OPEN badge: prominent pill so currently-live tabs jump out. -->
+                    <Border Grid.Column="2" CornerRadius="3" Padding="6,1" Margin="6,0,0,0"
+                            VerticalAlignment="Center"
+                            Background="{DynamicResource {x:Static vsui:EnvironmentColors.AccentMediumBrushKey}}"
+                            Visibility="{Binding IsOpen, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="OPEN" FontSize="9" FontWeight="Bold" Foreground="White" />
+                    </Border>
+
+                    <ItemsControl Grid.Column="3" VerticalAlignment="Center" Margin="6,0,0,0"
+                                  ItemsSource="{Binding Tags}"
+                                  ItemTemplate="{StaticResource TagChipTemplate}"
+                                  Visibility="{Binding HasTags, Converter={StaticResource BoolToVis}}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                </Grid>
+            </Border>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsOpen}" Value="True">
+                    <Setter TargetName="RowOuter" Property="BorderBrush"
+                            Value="{DynamicResource {x:Static vsui:EnvironmentColors.AccentMediumBrushKey}}" />
+                    <Setter TargetName="TitleText" Property="FontWeight" Value="SemiBold" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Border BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
+            BorderThickness="1">
+        <Grid Margin="10">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <imaging:CrispImage Grid.Column="0" Width="16" Height="16"
+                                    Margin="0,0,6,0" Opacity="0.7"
+                                    VerticalAlignment="Center"
+                                    Moniker="{x:Static catalog:KnownMonikers.Search}" />
+                <TextBox Grid.Column="1" x:Name="SearchBox"
+                         Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                         BorderThickness="1"
+                         FontSize="14" />
+            </Grid>
+
+            <ListBox Grid.Row="1" x:Name="ResultList"
+                     Margin="0,8,0,0"
+                     BorderThickness="1"
+                     ItemsSource="{Binding Results}"
+                     ItemTemplate="{StaticResource ResultRowTemplate}"
+                     SelectedItem="{Binding Selected, Mode=TwoWay}"
+                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                     IsTabStop="False"
+                     Focusable="False"
+                     MouseDoubleClick="OnResult_MouseDoubleClick" />
+
+            <DockPanel Grid.Row="2" Margin="0,8,0,0">
+                <TextBlock DockPanel.Dock="Left" Style="{StaticResource MutedText}"
+                           Text="{Binding StatusText}" VerticalAlignment="Center" />
+                <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right"
+                           Style="{StaticResource MutedText}" FontSize="11"
+                           Text="↑↓ navigate · Enter open · Esc close" />
+            </DockPanel>
+        </Grid>
+    </Border>
+</Window>

@@ -21,7 +21,7 @@ namespace AutoTabOrganiser.UI.Detail
                 : t.TagsCsv.Split(',').Select(s => "#" + s).ToArray();
             TagChips.ItemsSource = tags;
 
-            ConnectionText.Text = "";
+            ConnectionText.Text = FormatConnection(t.Server, t.Database);
             LastSnapshotText.Text = "Last snapshot: " +
                 DateTimeOffset.FromUnixTimeMilliseconds(t.Ts).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss");
 
@@ -41,6 +41,16 @@ namespace AutoTabOrganiser.UI.Detail
                     ErrorText.Text = "Markdown render failed: " + ex.Message;
                 }
             }
+        }
+
+        private static string FormatConnection(string server, string database)
+        {
+            var s = (server ?? "").Trim();
+            var d = (database ?? "").Trim();
+            if (s.Length == 0 && d.Length == 0) return "";
+            if (s.Length == 0) return "Connection: · " + d;
+            if (d.Length == 0) return "Connection: " + s;
+            return "Connection: " + s + " · " + d;
         }
 
         public void Clear()

@@ -39,6 +39,8 @@ namespace AutoTabOrganiser
         private Pruner _pruner;
         private Logger _log;
         private Timer _pruneTimer;
+        private EnvDTE.WindowEvents _windowEvents;
+        private EnvDTE.DTEEvents _dteEvents;
 
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
@@ -86,6 +88,20 @@ namespace AutoTabOrganiser
                 onTabUpdated: tabId => RefreshToolWindowAsync(),
                 onTabClosed:  tabId => RefreshToolWindowAsync(),
                 cancellationToken);
+
+            // Subscribe to SSMS window-activation so we can pin the user's currently-focused
+            // SQL tab to the top of the RECENT section. DTE.Events references must be held
+            // (not GC'd) for the events to keep firing.
+            try
+            {
+                var dte = (EnvDTE.DTE)await GetServiceAsync(typeof(EnvDTE.DTE));
+                if (dte != null)
+                {
+                    _windowEvents = dte.Events.WindowEvents;
+                    _windowEvents.WindowActivated += OnWindowActivated;
+                }
+            }
+            catch (Exception ex) { _log.Debug("WindowEvents subscribe failed: " + ex.Message); }
 
             ScheduleDailyPrune(appSettings);
 
@@ -138,6 +154,8 @@ namespace AutoTabOrganiser
                 Bind(mcs, PackageIds.ShowToolWindowCommandId,         OnShowToolWindowInvoked);
                 Bind(mcs, PackageIds.SnapshotNowCommandId,            OnSnapshotNowInvoked);
                 Bind(mcs, PackageIds.OpenSettingsCommandId,           OnOpenSettingsInvoked);
+                Bind(mcs, PackageIds.QuickSwitcherCommandId,          OnQuickSwitcherInvoked);
+                Bind(mcs, PackageIds.TagColoursCommandId,             OnTagColoursInvoked);
             }
         }
 
@@ -180,6 +198,95 @@ namespace AutoTabOrganiser
             catch (Exception ex) { _log.Error("Open settings.json failed", ex); }
         }
 
+        private void OnTagColoursInvoked(object sender, EventArgs e)
+        {
+            try
+            {
+                AutoTabOrganiser.UI.TagColours.TagColoursWindow.Show(
+                    _store, _settings, System.Windows.Application.Current?.MainWindow);
+                _ = RefreshToolWindowAsync();
+            }
+            catch (Exception ex) { _log.Error("Tag colours dialog failed", ex); }
+        }
+
+        private void OnQuickSwitcherInvoked(object sender, EventArgs e)
+        {
+            if (_store == null) return;
+            try
+            {
+                // Capture the active SSMS document's connection BEFORE the popup steals focus.
+                // After we open the picked tab, the active doc is the new (unconnected) tab,
+                // so the title-parse trick doesn't work post-open.
+                var preActiveConnection = TryReadActiveConnection();
+
+                AutoTabOrganiser.UI.QuickSwitcher.QuickSwitcherWindow.Show(
+                    _store, _settings, _log,
+                    openTabAtText: (tabId, findText) => OpenTabAtTextAsync(tabId, findText, preActiveConnection),
+                    owner: System.Windows.Application.Current?.MainWindow);
+            }
+            catch (Exception ex) { _log.Error("QuickSwitcher show failed", ex); }
+        }
+
+        /// <summary>
+        /// Best-effort read of the currently-active SSMS document's connection (server, database)
+        /// by parsing the shell window caption. Null fields mean no detectable connection.
+        /// </summary>
+        private (string server, string database) TryReadActiveConnection()
+        {
+            try
+            {
+                ThreadHelper.ThrowIfNotOnUIThread();
+                var dte = (EnvDTE.DTE)GetService(typeof(EnvDTE.DTE));
+                var caption = dte?.MainWindow?.Caption;
+                return Tracking.ConnectionExtractor.FromWindowTitle(caption);
+            }
+            catch { return (null, null); }
+        }
+
+        /// <summary>
+        /// Open a tab (existing logic), then if <paramref name="findText"/> is non-empty,
+        /// move the editor's selection to the first occurrence so the user lands on what
+        /// they searched for. If <paramref name="preActiveConnection"/> contains a server
+        /// name (i.e. there *was* a current connection at the moment Ctrl+P was invoked),
+        /// pop SSMS's Connect dialog so the user can reattach with one click.
+        /// </summary>
+        private async Task OpenTabAtTextAsync(string tabId, string findText,
+                                              (string server, string database) preActiveConnection)
+        {
+            await OpenTabFromHistoryAsync(tabId);
+
+            // Find-text first so the cursor is positioned even if the connect step throws.
+            if (!string.IsNullOrEmpty(findText))
+            {
+                try
+                {
+                    await JoinableTaskFactory.SwitchToMainThreadAsync();
+                    var dte = (EnvDTE.DTE)await GetServiceAsync(typeof(EnvDTE.DTE));
+                    var doc = dte?.ActiveDocument;
+                    if (doc?.Selection is EnvDTE.TextSelection sel)
+                    {
+                        sel.StartOfDocument();
+                        sel.FindText(findText, 0);
+                    }
+                }
+                catch (Exception ex) { _log?.Debug("Navigate-to-text failed: " + ex.Message); }
+            }
+
+            // Auto-connect: only prompt when the previously-active doc had a connection.
+            // SSMS's Query.Connection command opens the Connect dialog pre-populated with
+            // the last-used connection (typically the one we want); user clicks Connect.
+            if (!string.IsNullOrEmpty(preActiveConnection.server))
+            {
+                try
+                {
+                    await JoinableTaskFactory.SwitchToMainThreadAsync();
+                    var dte = (EnvDTE.DTE)await GetServiceAsync(typeof(EnvDTE.DTE));
+                    dte?.ExecuteCommand("Query.Connection");
+                }
+                catch (Exception ex) { _log?.Debug("Auto-connect prompt failed: " + ex.Message); }
+            }
+        }
+
         // -------- tool window wiring --------
 
         private void WireToolWindow(ToolWindowControl control)
@@ -195,6 +302,9 @@ namespace AutoTabOrganiser
                 viewMode: s.Ui.TabsViewMode,
                 sortMode: s.Ui.TabsSortMode);
             control.OpenSnapshotHandler = OpenSnapshotInNewTabAsync;
+
+            // Seed the active-tab id so the row is pinned even before any focus change.
+            try { control.SetActiveTabId(_docTracker?.GetActiveTabId()); } catch { }
         }
 
         /// <summary>
@@ -281,6 +391,18 @@ namespace AutoTabOrganiser
                 dte?.ItemOperations?.OpenFile(tmp);
             }
             catch (Exception ex) { _log.Error("Open snapshot failed", ex); }
+        }
+
+        private void OnWindowActivated(EnvDTE.Window gotFocus, EnvDTE.Window lostFocus)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            try
+            {
+                var tabId = _docTracker?.GetActiveTabId();
+                var window = FindToolWindow(typeof(TabOrganiserToolWindow), 0, false) as TabOrganiserToolWindow;
+                window?.Control?.SetActiveTabId(tabId);
+            }
+            catch (Exception ex) { _log?.Debug("WindowActivated handler failed: " + ex.Message); }
         }
 
         private Task RefreshToolWindowAsync()

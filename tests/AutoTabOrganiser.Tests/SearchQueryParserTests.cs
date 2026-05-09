@@ -71,7 +71,8 @@ namespace AutoTabOrganiser.Tests
             var (where, pars) = SearchQueryParser.ToSql(q, 0);
             where.Should().Contain("tab_content_fts");
             where.Should().Contain("MATCH");
-            pars.Should().ContainSingle(p => p.Value as string == "select");
+            // FTS5 prefix query: typing "select" matches tokens starting with "select".
+            pars.Should().ContainSingle(p => p.Value as string == "select*");
         }
     }
 }

@@ -66,7 +66,10 @@ namespace AutoTabOrganiser.Tracking
 
             foreach (var info in t._rdt) t.AttachIfSqlDoc(info.DocCookie, info.Moniker);
 
-            t._pollTimer = new Timer(_ => t.PollOnce(), null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+            // 500ms keeps detection latency under a second (a fresh tab appears in the side
+            // panel within ~half a second of the user typing) without measurably bumping CPU.
+            // Each tick is a hash-compare per pipeline and an early-out on no-change.
+            t._pollTimer = new Timer(_ => t.PollOnce(), null, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(500));
             return t;
         }
 
@@ -167,6 +170,16 @@ namespace AutoTabOrganiser.Tracking
 
             lock (_pipelines) _pipelines[docCookie] = pipeline;
             _log.Info($"[doc opened] {SafeName(moniker)}  [{moniker}]");
+
+            // Fire an immediate "first" snapshot so the side panel shows the tab right away
+            // instead of waiting for the edit-debounce window. Empty content is skipped inside
+            // the pipeline so a blank untitled tab doesn't clutter the panel.
+            try
+            {
+                var firstText = ReadDocText(docCookie);
+                if (firstText != null) pipeline.OfferSnapshot(firstText, "first");
+            }
+            catch (Exception ex) { _log.Debug($"first-snapshot failed for {moniker}: {ex.Message}"); }
         }
 
         private void DetachIfTracked(uint docCookie)
@@ -186,6 +199,15 @@ namespace AutoTabOrganiser.Tracking
                 var text = ReadDocText(docCookie);
                 pipeline.OnClosed(text);
                 _log.Info($"[doc closed] {SafeName(moniker ?? pipeline.Moniker)}");
+
+                // Mark the tab as closed in the index so the quick switcher sorts it after
+                // currently-open tabs. WriteSnapshot always sets is_open=1; we have to flip
+                // it back here.
+                if (!string.IsNullOrEmpty(pipeline.TabId))
+                {
+                    try { _store.SetTabState(pipeline.TabId, isOpen: false, isDirty: null); }
+                    catch (Exception ex) { _log.Debug("SetTabState(open=false) failed: " + ex.Message); }
+                }
             }
             finally { pipeline.Dispose(); }
         }
@@ -370,6 +392,20 @@ namespace AutoTabOrganiser.Tracking
             if (!(frameObj is IVsWindowFrame frame)) return 0;
             if (frame.GetProperty((int)__VSFPROPID.VSFPROPID_DocCookie, out object cookieObj) != 0) return 0;
             try { return Convert.ToUInt32(cookieObj); } catch { return 0; }
+        }
+
+        /// <summary>
+        /// Returns the tab_id of the currently-active SSMS document, or null if no tracked
+        /// SQL document is active. Must be called on the UI thread.
+        /// </summary>
+        public string GetActiveTabId()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var cookie = GetActiveDocCookie();
+            if (cookie == 0) return null;
+            SnapshotPipeline pipeline;
+            lock (_pipelines) _pipelines.TryGetValue(cookie, out pipeline);
+            return pipeline?.TabId;
         }
 
         private static string SafeName(string moniker)

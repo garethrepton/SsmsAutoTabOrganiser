@@ -18,7 +18,10 @@ namespace AutoTabOrganiser.Git
         private readonly object _gate = new object();
         private readonly Dictionary<string, (DateTime when, Dictionary<string, GitFileStatus> map)> _byRepo
             = new Dictionary<string, (DateTime, Dictionary<string, GitFileStatus>)>(StringComparer.OrdinalIgnoreCase);
-        private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(2);
+        // Very short TTL — we want the panel to feel live. Burst calls during a refresh
+        // still hit cache (multiple paths grouped into one git invocation per repo), but
+        // sequential refreshes after a real change always re-query.
+        private static readonly TimeSpan CacheTtl = TimeSpan.FromMilliseconds(200);
 
         public Dictionary<string, GitFileStatus> Resolve(IEnumerable<string> filePaths)
         {
@@ -62,7 +65,12 @@ namespace AutoTabOrganiser.Git
 
         private static Dictionary<string, GitFileStatus> QueryRepoStatus(string repoRoot)
         {
-            var map = new Dictionary<string, GitFileStatus>(StringComparer.Ordinal);
+            // Case-insensitive: git's output preserves on-disk casing but our locally-computed
+            // relative paths (via Path.GetFullPath + Substring) sometimes pick up Windows's
+            // canonicalised casing, which can differ from the actual on-disk casing in subtle
+            // ways. Mismatched casing made Resolve() return Clean for genuinely-uncommitted
+            // files, leaving the Stored Queries section empty.
+            var map = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 var psi = new ProcessStartInfo("git", "status --porcelain -uall")
