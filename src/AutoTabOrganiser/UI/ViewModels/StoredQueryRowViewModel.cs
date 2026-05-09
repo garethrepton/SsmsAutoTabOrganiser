@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Windows.Media;
 using AutoTabOrganiser.Git;
 using AutoTabOrganiser.Storage;
@@ -10,16 +12,39 @@ namespace AutoTabOrganiser.UI.ViewModels
     /// file (saved to the user's Stored Queries folder) has uncommitted git changes —
     /// modified, untracked, or staged.
     /// </summary>
-    internal sealed class StoredQueryRowViewModel
+    /// <remarks>
+    /// <see cref="Status"/> is mutable with INPC so optimistic updates can mutate the
+    /// existing instance instead of replacing it in the ObservableCollection. Replacing
+    /// fires CollectionChanged.Replace which makes the ListBox recreate the ListBoxItem;
+    /// during that recreation, button hit-testing on adjacent rows can briefly fail and
+    /// clicks get lost. Mutating in place avoids the ListBoxItem rebuild entirely.
+    /// </remarks>
+    internal sealed class StoredQueryRowViewModel : INotifyPropertyChanged
     {
+        public event PropertyChangedEventHandler PropertyChanged;
+
         public TabSummary Source { get; }
-        public GitFileStatus Status { get; }
         public string FilePath { get; }
+
+        private GitFileStatus _status;
+        public GitFileStatus Status
+        {
+            get => _status;
+            set
+            {
+                if (_status == value) return;
+                _status = value;
+                Notify(nameof(Status));
+                Notify(nameof(Letter));
+                Notify(nameof(StatusName));
+                Notify(nameof(LetterBrush));
+            }
+        }
 
         public StoredQueryRowViewModel(TabSummary source, GitFileStatus status, string path)
         {
             Source = source;
-            Status = status;
+            _status = status;
             FilePath = path;
         }
 
@@ -31,7 +56,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             get
             {
-                switch (Status)
+                switch (_status)
                 {
                     case GitFileStatus.Modified:  return "M";
                     case GitFileStatus.Untracked: return "U";
@@ -45,12 +70,12 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             get
             {
-                switch (Status)
+                switch (_status)
                 {
                     case GitFileStatus.Modified:  return "Modified";
                     case GitFileStatus.Untracked: return "Untracked";
                     case GitFileStatus.Staged:    return "Staged (added)";
-                    default: return Status.ToString();
+                    default: return _status.ToString();
                 }
             }
         }
@@ -59,7 +84,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             get
             {
-                switch (Status)
+                switch (_status)
                 {
                     case GitFileStatus.Modified:
                         return new SolidColorBrush(Color.FromRgb(0xE2, 0xC0, 0x8D)); // amber
@@ -72,5 +97,8 @@ namespace AutoTabOrganiser.UI.ViewModels
                 }
             }
         }
+
+        private void Notify([CallerMemberName] string name = null)
+            => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }

@@ -441,18 +441,20 @@ namespace AutoTabOrganiser.UI.ViewModels
         }
 
         /// <summary>
-        /// Apply an immediate UI update for a known-good post-git-op state. Updates the
-        /// in-memory git-status cache, swaps the matching StoredQueries row in place
-        /// (or removes it when the new status is Clean), and refreshes the git icon on
-        /// the same tab anywhere else it's visible. Saves the user from waiting for the
-        /// async git-status query that <see cref="DebounceRefreshAll"/> will run later.
+        /// Apply an immediate UI update for a known-good post-git-op state. Pure in-memory
+        /// work — no SQLite queries, no Task.Run, no collection replacement (only direct
+        /// mutation or removal of the affected row). This is critical: previous versions
+        /// did a SQLite query per visible row inside <c>UpdateGitStatusOn</c>'s
+        /// <c>LookupOriginalFilePath</c>, blocking the UI thread for hundreds of milliseconds
+        /// per click and causing subsequent clicks to be dropped.
         /// </summary>
-        private void OptimisticSetGitStatus(string filePath, GitFileStatus newStatus)
+        private void OptimisticSetGitStatus(string filePath, string tabId, GitFileStatus newStatus)
         {
             if (string.IsNullOrEmpty(filePath)) return;
             _gitStatusByPath[filePath] = newStatus;
 
-            // StoredQueries: replace or remove the row.
+            // StoredQueries: mutate the matching row's Status in place (INPC re-renders the
+            // cells), or remove it from the collection when the new status is Clean.
             for (int i = StoredQueries.Count - 1; i >= 0; i--)
             {
                 var row = StoredQueries[i];
@@ -460,38 +462,32 @@ namespace AutoTabOrganiser.UI.ViewModels
                 if (newStatus == GitFileStatus.Clean)
                     StoredQueries.RemoveAt(i);
                 else
-                    StoredQueries[i] = new StoredQueryRowViewModel(row.Source, newStatus, filePath);
+                    row.Status = newStatus;
             }
             StoredQueriesHeader = StoredQueries.Count == 0
                 ? "SOURCE CONTROL — STORED QUERIES"
                 : $"SOURCE CONTROL — STORED QUERIES ({StoredQueries.Count})";
             StoredQueriesEmptyVisible = StoredQueries.Count == 0;
 
-            // Same file might be visible elsewhere — push the new git status onto its TabRow
-            // VMs in Tabs/Recent/Pinned. INotifyPropertyChanged on TabRowViewModel.GitStatus
-            // re-renders the icon without recreating the row, so no flicker.
-            UpdateGitStatusOn(Tabs);
-            UpdateGitStatusOn(Recent);
-            foreach (var section in PinnedSections) UpdateGitStatusOn(section.Items);
+            // Cross-section icon update by tabId match — zero I/O. No LookupOriginalFilePath
+            // (which was the SQL hot path), no path comparison; we already know the tabId
+            // for the row we just operated on.
+            if (!string.IsNullOrEmpty(tabId))
+            {
+                MutateGitStatusByTabId(Tabs, tabId, newStatus);
+                MutateGitStatusByTabId(Recent, tabId, newStatus);
+                foreach (var section in PinnedSections)
+                    MutateGitStatusByTabId(section.Items, tabId, newStatus);
+            }
         }
 
-        // A single coalesced full refresh runs after a brief settle period instead of one per
-        // git op. Without this, RefreshAll would run multiple times during a Commit-All burst,
-        // each cascading 5+ Task.Run git-status queries and replacing the StoredQueries
-        // collection — the source of the hover-flicker the user reported.
-        private DispatcherTimer _refreshAllDebounce;
-        private void DebounceRefreshAll()
+        private static void MutateGitStatusByTabId(IEnumerable<TabRowViewModel> rows, string tabId, GitFileStatus status)
         {
-            Marshal(() =>
+            foreach (var vm in rows)
             {
-                if (_refreshAllDebounce == null)
-                {
-                    _refreshAllDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
-                    _refreshAllDebounce.Tick += (s, e) => { _refreshAllDebounce.Stop(); RefreshAll(); };
-                }
-                _refreshAllDebounce.Stop();
-                _refreshAllDebounce.Start();
-            });
+                if (vm.Source != null && vm.Source.TabId == tabId)
+                    vm.GitStatus = status;
+            }
         }
 
         /// <summary>Called by the package after each tab update; keeps lists in sync.</summary>
@@ -1106,16 +1102,11 @@ namespace AutoTabOrganiser.UI.ViewModels
             var r = GitHelper.Add(vm.FilePath, _log);
             if (!r.Ok) { Info("git add failed: " + (r.StdErr ?? r.Error ?? r.StdOut)); return; }
 
-            // Instant visual feedback: swap this row to Staged in place, push the new status
-            // to the in-memory dict, and update the git icon on the same tab in any other
-            // visible section. The async git-status query in RefreshAll catches edge cases
-            // (e.g. an MM partial-stage where there are still unstaged changes) but doesn't
-            // gate the visible button feedback on its 200-700ms latency.
-            OptimisticSetGitStatus(vm.FilePath, GitFileStatus.Staged);
-            Info("Staged " + Path.GetFileName(vm.FilePath));
-
+            // Instant, zero-I/O visual feedback. The FS watcher's debounced refresh will
+            // catch any structural changes (new files, removed files) shortly after.
+            OptimisticSetGitStatus(vm.FilePath, vm.Source?.TabId, GitFileStatus.Staged);
             _gitResolver.Invalidate();
-            DebounceRefreshAll();
+            Info("Staged " + Path.GetFileName(vm.FilePath));
         }
 
         private void CommitStoredQuery(StoredQueryRowViewModel vm)
@@ -1134,12 +1125,9 @@ namespace AutoTabOrganiser.UI.ViewModels
             var commit = GitHelper.Commit(vm.FilePath, msg, _log);
             if (!commit.Ok) { Info("git commit failed: " + (commit.StdErr ?? commit.Error ?? commit.StdOut)); return; }
 
-            // Committed = no longer dirty; remove the row from the section immediately.
-            OptimisticSetGitStatus(vm.FilePath, GitFileStatus.Clean);
-            Info("Committed " + Path.GetFileName(vm.FilePath));
-
+            OptimisticSetGitStatus(vm.FilePath, vm.Source?.TabId, GitFileStatus.Clean);
             _gitResolver.Invalidate();
-            DebounceRefreshAll();
+            Info("Committed " + Path.GetFileName(vm.FilePath));
         }
 
         private void CommitAllStoredQueries()
@@ -1178,10 +1166,9 @@ namespace AutoTabOrganiser.UI.ViewModels
 
             // Optimistic: every row we just committed becomes Clean — drop them all.
             foreach (var r in rows.ToList())
-                OptimisticSetGitStatus(r.FilePath, GitFileStatus.Clean);
+                OptimisticSetGitStatus(r.FilePath, r.Source?.TabId, GitFileStatus.Clean);
 
             _gitResolver.Invalidate();
-            DebounceRefreshAll();
         }
 
         /// <summary>Open the configured Stored Queries folder in Explorer.</summary>
@@ -1291,13 +1278,12 @@ namespace AutoTabOrganiser.UI.ViewModels
                     return;
                 }
 
-                // Optimistic feedback per verb so the row visibly changes immediately,
-                // followed by a debounced full refresh that catches edge cases.
-                if (verb == "add")    OptimisticSetGitStatus(path, GitFileStatus.Staged);
-                if (verb == "commit") OptimisticSetGitStatus(path, GitFileStatus.Clean);
+                // Optimistic feedback per verb so the row visibly changes immediately.
+                // FS watcher catches any structural changes (new files etc.) on its own.
+                if (verb == "add")    OptimisticSetGitStatus(path, t.TabId, GitFileStatus.Staged);
+                if (verb == "commit") OptimisticSetGitStatus(path, t.TabId, GitFileStatus.Clean);
 
                 _gitResolver.Invalidate();
-                DebounceRefreshAll();
                 Info($"git {verb}: {Path.GetFileName(path)}");
             }
             catch (Exception ex)
