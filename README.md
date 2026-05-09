@@ -5,6 +5,7 @@ you a sidebar with search, pinned tag sections, and a tiny source-control
 panel for the queries you save to disk.
 
 ## ⚠️ Disclaimer
+This was very much AI Assisted.
 
 I built this for myself and **I haven't even used it properly yet**.
 There's no test coverage on the SSMS-loaded code path, no telemetry, no
