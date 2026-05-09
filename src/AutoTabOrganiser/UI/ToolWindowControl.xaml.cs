@@ -35,11 +35,15 @@ namespace AutoTabOrganiser.UI
         }
 
         public void Initialise(SnapshotStore store, Func<string, Task> openTabId, Action onSettingsClick,
+                               Action onSnapshotNow, Action onQuickSwitcher, Action onTagConfig,
                                Logger log, SettingsStore settings, string viewMode, string sortMode)
         {
             _vm = new ToolWindowViewModel(store, settings, log,
                 openTabId: openTabId,
                 openSettings: onSettingsClick,
+                snapshotNow: onSnapshotNow,
+                quickSwitcher: onQuickSwitcher,
+                tagConfig: onTagConfig,
                 openAsNewSnapshot: r => OpenSnapshotHandler != null ? OpenSnapshotHandler(r) : Task.CompletedTask,
                 showTagPicker: ShowTagPickerDialog,
                 promptCommitMessage: PromptForCommitMessage,

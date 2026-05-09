@@ -15,12 +15,10 @@ namespace AutoTabOrganiser
     {
         public const int TabHistoryToolsGroup           = 0x1020;
         public const int TabHistoryViewGroup            = 0x1021;
-        public const int HelloCommandId                 = 0x0100;
         public const int ShowToolWindowCommandId        = 0x0101;
         public const int SnapshotNowCommandId           = 0x0102;
-        public const int ShowThisTabHistoryCommandId    = 0x0103;
         public const int OpenSettingsCommandId          = 0x0104;
         public const int QuickSwitcherCommandId         = 0x0105;
-        public const int TagColoursCommandId            = 0x0107;
+        public const int TagConfigCommandId             = 0x0107;
     }
 }

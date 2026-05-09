@@ -36,6 +36,9 @@ namespace AutoTabOrganiser.UI.ViewModels
         private readonly Logger _log;
         private readonly Func<string, Task> _openTabId;
         private readonly Action _openSettings;
+        private readonly Action _snapshotNow;
+        private readonly Action _quickSwitcher;
+        private readonly Action _tagConfig;
         private readonly Func<SnapshotRecord, Task> _openAsNewSnapshot;
         private readonly Func<List<string>, List<string>, List<string>> _showTagPicker;
         private readonly Func<string, string> _promptCommitMessage;
@@ -180,6 +183,9 @@ namespace AutoTabOrganiser.UI.ViewModels
         // ---- commands ----
         public ICommand OpenStorageCommand { get; }
         public ICommand OpenSettingsCommand { get; }
+        public ICommand SnapshotNowCommand { get; }
+        public ICommand QuickSwitcherCommand { get; }
+        public ICommand TagConfigCommand { get; }
         public ICommand ClearSearchCommand { get; }
         public ICommand CloseInfoBarCommand { get; }
 
@@ -215,6 +221,9 @@ namespace AutoTabOrganiser.UI.ViewModels
         public ToolWindowViewModel(SnapshotStore store, SettingsStore settings, Logger log,
                                    Func<string, Task> openTabId,
                                    Action openSettings,
+                                   Action snapshotNow,
+                                   Action quickSwitcher,
+                                   Action tagConfig,
                                    Func<SnapshotRecord, Task> openAsNewSnapshot,
                                    Func<List<string>, List<string>, List<string>> showTagPicker,
                                    Func<string, string> promptCommitMessage,
@@ -228,6 +237,9 @@ namespace AutoTabOrganiser.UI.ViewModels
             _log = log;
             _openTabId = openTabId;
             _openSettings = openSettings;
+            _snapshotNow = snapshotNow;
+            _quickSwitcher = quickSwitcher;
+            _tagConfig = tagConfig;
             _openAsNewSnapshot = openAsNewSnapshot;
             _showTagPicker = showTagPicker;
             _promptCommitMessage = promptCommitMessage;
@@ -240,6 +252,9 @@ namespace AutoTabOrganiser.UI.ViewModels
 
             OpenStorageCommand   = new RelayCommand(OpenStorage);
             OpenSettingsCommand  = new RelayCommand(() => _openSettings?.Invoke());
+            SnapshotNowCommand   = new RelayCommand(() => _snapshotNow?.Invoke());
+            QuickSwitcherCommand = new RelayCommand(() => _quickSwitcher?.Invoke());
+            TagConfigCommand     = new RelayCommand(() => _tagConfig?.Invoke());
             ClearSearchCommand   = new RelayCommand(() => SearchText = "");
             CloseInfoBarCommand  = new RelayCommand(HideInfoBar);
 

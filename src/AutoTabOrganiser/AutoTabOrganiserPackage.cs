@@ -150,12 +150,11 @@ namespace AutoTabOrganiser
             await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
             if (await GetServiceAsync(typeof(IMenuCommandService)) is OleMenuCommandService mcs)
             {
-                Bind(mcs, PackageIds.HelloCommandId,                  OnHelloInvoked);
                 Bind(mcs, PackageIds.ShowToolWindowCommandId,         OnShowToolWindowInvoked);
                 Bind(mcs, PackageIds.SnapshotNowCommandId,            OnSnapshotNowInvoked);
                 Bind(mcs, PackageIds.OpenSettingsCommandId,           OnOpenSettingsInvoked);
                 Bind(mcs, PackageIds.QuickSwitcherCommandId,          OnQuickSwitcherInvoked);
-                Bind(mcs, PackageIds.TagColoursCommandId,             OnTagColoursInvoked);
+                Bind(mcs, PackageIds.TagConfigCommandId,              OnTagConfigInvoked);
             }
         }
 
@@ -165,13 +164,6 @@ namespace AutoTabOrganiser
         }
 
         // -------- command handlers --------
-
-        private void OnHelloInvoked(object sender, EventArgs e)
-        {
-            ThreadHelper.ThrowIfNotOnUIThread();
-            VsShellUtilities.ShowMessageBox(this, "Hello from Auto Tab Organiser.", "Tab History",
-                OLEMSGICON.OLEMSGICON_INFO, OLEMSGBUTTON.OLEMSGBUTTON_OK, OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
-        }
 
         private void OnShowToolWindowInvoked(object sender, EventArgs e)
         {
@@ -198,15 +190,15 @@ namespace AutoTabOrganiser
             catch (Exception ex) { _log.Error("Open settings.json failed", ex); }
         }
 
-        private void OnTagColoursInvoked(object sender, EventArgs e)
+        private void OnTagConfigInvoked(object sender, EventArgs e)
         {
             try
             {
-                AutoTabOrganiser.UI.TagColours.TagColoursWindow.Show(
+                AutoTabOrganiser.UI.TagConfig.TagConfigWindow.Show(
                     _store, _settings, System.Windows.Application.Current?.MainWindow);
                 _ = RefreshToolWindowAsync();
             }
-            catch (Exception ex) { _log.Error("Tag colours dialog failed", ex); }
+            catch (Exception ex) { _log.Error("Tag config dialog failed", ex); }
         }
 
         private void OnQuickSwitcherInvoked(object sender, EventArgs e)
@@ -297,6 +289,9 @@ namespace AutoTabOrganiser
             control.Initialise(_store,
                 openTabId: tabId => OpenTabFromHistoryAsync(tabId),
                 onSettingsClick: () => OnOpenSettingsInvoked(this, EventArgs.Empty),
+                onSnapshotNow:   () => OnSnapshotNowInvoked(this, EventArgs.Empty),
+                onQuickSwitcher: () => OnQuickSwitcherInvoked(this, EventArgs.Empty),
+                onTagConfig:     () => OnTagConfigInvoked(this, EventArgs.Empty),
                 log: _log,
                 settings: _settings,
                 viewMode: s.Ui.TabsViewMode,

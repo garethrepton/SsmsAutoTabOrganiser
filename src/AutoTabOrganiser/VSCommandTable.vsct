@@ -7,38 +7,41 @@
   <Commands package="guidAutoTabOrganiserPackage">
 
     <Groups>
-      <Group guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" priority="0x0600">
-        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" />
-      </Group>
+      <!-- TabHistoryToolsGroup is intentionally not parented to any menu — every command
+           inside it is invoked from the tool window's toolbar or via keybinding now, not
+           from VS's Tools menu. The group still has to exist so the buttons have a parent
+           and the command IDs stay registered (keybindings + programmatic invoke). -->
+      <Group guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" priority="0x0600" />
       <Group guid="guidAutoTabOrganiserCmdSet" id="TabHistoryViewGroup" priority="0x0600">
         <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_VIEW" />
       </Group>
     </Groups>
 
     <Buttons>
-      <Button guid="guidAutoTabOrganiserCmdSet" id="HelloCommandId" priority="0x0100" type="Button">
-        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
-        <Strings><ButtonText>Tab History: Hello</ButtonText></Strings>
-      </Button>
+      <!-- Visible: View → Tab Organiser. Opens the tool window. -->
       <Button guid="guidAutoTabOrganiserCmdSet" id="ShowToolWindowCommandId" priority="0x0110" type="Button">
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryViewGroup" />
         <Strings><ButtonText>Tab Organiser</ButtonText></Strings>
       </Button>
+
+      <!-- The rest live on TabHistoryToolsGroup which is unparented (see above). They keep
+           their IDs/keybindings so the toolbar can invoke them and Ctrl+P / Ctrl+Alt+H,S
+           still work, but they no longer appear in any VS menu. -->
       <Button guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId" priority="0x0120" type="Button">
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
-        <Strings><ButtonText>Tab History: Snapshot Now</ButtonText></Strings>
+        <Strings><ButtonText>Tab Organiser: Snapshot Now</ButtonText></Strings>
       </Button>
       <Button guid="guidAutoTabOrganiserCmdSet" id="OpenSettingsCommandId" priority="0x0140" type="Button">
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
-        <Strings><ButtonText>Tab History: Open Settings File</ButtonText></Strings>
+        <Strings><ButtonText>Tab Organiser: Open Settings File</ButtonText></Strings>
       </Button>
       <Button guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId" priority="0x0150" type="Button">
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
-        <Strings><ButtonText>Tab History: Quick Switcher</ButtonText></Strings>
+        <Strings><ButtonText>Tab Organiser: Quick Switcher</ButtonText></Strings>
       </Button>
-      <Button guid="guidAutoTabOrganiserCmdSet" id="TagColoursCommandId" priority="0x0170" type="Button">
+      <Button guid="guidAutoTabOrganiserCmdSet" id="TagConfigCommandId" priority="0x0170" type="Button">
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
-        <Strings><ButtonText>Tab History: Configure Tag Colours…</ButtonText></Strings>
+        <Strings><ButtonText>Tab Organiser: Tag Config…</ButtonText></Strings>
       </Button>
     </Buttons>
 
@@ -61,13 +64,11 @@
       <IDSymbol name="TabHistoryToolsGroup" value="0x1020" />
       <IDSymbol name="TabHistoryViewGroup"  value="0x1021" />
 
-      <IDSymbol name="HelloCommandId"             value="0x0100" />
       <IDSymbol name="ShowToolWindowCommandId"    value="0x0101" />
       <IDSymbol name="SnapshotNowCommandId"       value="0x0102" />
-      <IDSymbol name="ShowThisTabHistoryCommandId" value="0x0103" />
       <IDSymbol name="OpenSettingsCommandId"      value="0x0104" />
       <IDSymbol name="QuickSwitcherCommandId"     value="0x0105" />
-      <IDSymbol name="TagColoursCommandId"        value="0x0107" />
+      <IDSymbol name="TagConfigCommandId"         value="0x0107" />
     </GuidSymbol>
   </Symbols>
 

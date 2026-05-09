@@ -340,6 +340,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" MinHeight="200" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="240" MinHeight="120" />
@@ -347,8 +348,47 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- Inline info bar -->
+        <!-- Toolbar: top-of-sidebar global commands. Replaces the Tools-menu entries that
+             previously hosted these. Buttons stay reasonably small so they don't dominate
+             the sidebar. -->
         <Border Grid.Row="0"
+                Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
+                BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
+                BorderThickness="0,0,0,1" Padding="4,2">
+            <StackPanel Orientation="Horizontal">
+                <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Snapshot the active tab now (Ctrl+Alt+H, S)"
+                        Command="{Binding SnapshotNowCommand}">
+                    <imaging:CrispImage Width="16" Height="16"
+                                        Moniker="{x:Static catalog:KnownMonikers.TakeSnapshot}" />
+                </Button>
+                <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Quick switcher (Ctrl+P)"
+                        Command="{Binding QuickSwitcherCommand}">
+                    <imaging:CrispImage Width="16" Height="16"
+                                        Moniker="{x:Static catalog:KnownMonikers.GoToNext}" />
+                </Button>
+                <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Tag config (colours and auto-tag rules)"
+                        Command="{Binding TagConfigCommand}">
+                    <imaging:CrispImage Width="16" Height="16"
+                                        Moniker="{x:Static catalog:KnownMonikers.EditTag}" />
+                </Button>
+                <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Open settings.json"
+                        Command="{Binding OpenSettingsCommand}">
+                    <imaging:CrispImage Width="16" Height="16"
+                                        Moniker="{x:Static catalog:KnownMonikers.SettingsFile}" />
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <!-- Inline info bar -->
+        <Border Grid.Row="1"
                 Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
                 BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
                 BorderThickness="0,0,0,1" Padding="8,4"
@@ -364,7 +404,7 @@
             </DockPanel>
         </Border>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
 
                 <Expander IsExpanded="True">
@@ -561,7 +601,6 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
 
                             <Border Grid.Column="0"
@@ -603,12 +642,6 @@
                                 <ComboBoxItem Tag="name-desc"   Content="Name (Z-A)" />
                                 <ComboBoxItem Tag="folder-name" Content="Folder, then name" />
                             </ComboBox>
-                            <Button Grid.Column="2" Margin="6,0,0,0"
-                                    Command="{Binding OpenSettingsCommand}"
-                                    ToolTip="Settings" Padding="4,1" MinWidth="0">
-                                <imaging:CrispImage Width="14" Height="14"
-                                                    Moniker="{x:Static catalog:KnownMonikers.Settings}" />
-                            </Button>
                         </Grid>
 
                         <ListBox x:Name="TabsList" Grid.Row="1" MinHeight="160"
@@ -629,17 +662,17 @@
             </StackPanel>
         </ScrollViewer>
 
-        <GridSplitter Grid.Row="2" Height="4" HorizontalAlignment="Stretch"
+        <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch"
                       Background="Transparent" />
 
-        <Border Grid.Row="3"
+        <Border Grid.Row="4"
                 BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
                 BorderThickness="0,1,0,0">
             <ContentControl x:Name="DetailHost" />
         </Border>
 
         <!-- Inline name prompt for the "Save to scripts folder" action. -->
-        <Border Grid.Row="4"
+        <Border Grid.Row="5"
                 BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
                 BorderThickness="0,1,0,0"
                 Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
@@ -684,7 +717,7 @@
             </Grid>
         </Border>
 
-        <Border Grid.Row="5"
+        <Border Grid.Row="6"
                 BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
                 BorderThickness="0,1,0,0"
                 Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}">
