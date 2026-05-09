@@ -212,6 +212,7 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
@@ -261,6 +262,17 @@
                         <imaging:CrispImage Width="14" Height="14"
                                             Moniker="{x:Static catalog:KnownMonikers.SaveAs}" />
                     </Button>
+
+                    <!-- Far-right timestamps: edited (any snapshot) on top, saved (saved-reason
+                         snapshot) below. "saved" line hides when the tab has never been written
+                         to disk via Save to scripts folder. -->
+                    <StackPanel Grid.Column="5" VerticalAlignment="Center" Margin="6,0,0,0">
+                        <TextBlock Text="{Binding LastEditedText}" FontSize="10"
+                                   Opacity="0.6" TextAlignment="Right" />
+                        <TextBlock Text="{Binding LastSavedText}" FontSize="10"
+                                   Opacity="0.6" TextAlignment="Right"
+                                   Visibility="{Binding HasLastSaved, Converter={StaticResource BoolToVis}}" />
+                    </StackPanel>
                 </Grid>
             </Border>
             <DataTemplate.Triggers>
@@ -433,6 +445,7 @@
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
                                         <TextBlock Grid.Column="0" Text="{Binding Letter}"
                                                    Foreground="{Binding LetterBrush}"
@@ -442,12 +455,19 @@
                                         <TextBlock Grid.Column="1" VerticalAlignment="Center"
                                                    TextTrimming="CharacterEllipsis"
                                                    Text="{Binding FileName}" />
+                                        <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="6,0,0,0">
+                                            <TextBlock Text="{Binding LastEditedText}" FontSize="10"
+                                                       Opacity="0.6" TextAlignment="Right" />
+                                            <TextBlock Text="{Binding LastSavedText}" FontSize="10"
+                                                       Opacity="0.6" TextAlignment="Right"
+                                                       Visibility="{Binding HasLastSaved, Converter={StaticResource BoolToVis}}" />
+                                        </StackPanel>
                                         <!-- Always visible. Hover-only buttons are clickable
                                              only while the row's IsMouseOver trigger is true,
                                              which flickers during repaints (especially when
                                              the collection is being refreshed). Clicks
                                              landing in that window were silently lost. -->
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal">
+                                        <StackPanel Grid.Column="3" Orientation="Horizontal">
                                             <Button Command="{Binding DataContext.DiffStoredQueryCommand, ElementName=RootControl}"
                                                     CommandParameter="{Binding}"
                                                     Padding="4,1" MinWidth="0" Margin="4,0,0,0"

@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using AutoTabOrganiser.Editor;
 using AutoTabOrganiser.Git;
 using AutoTabOrganiser.Storage;
+using AutoTabOrganiser.Util;
 
 namespace AutoTabOrganiser.UI.ViewModels
 {
@@ -64,6 +65,16 @@ namespace AutoTabOrganiser.UI.ViewModels
 
         public bool IsOpen => Source.IsOpen;
         public bool IsDirty => Source.IsDirty;
+
+        /// <summary>Compact "edited Xm" — driven by the latest snapshot of any reason.</summary>
+        public string LastEditedText => "edited " + RelativeTime.Format(Source.Ts);
+
+        /// <summary>Compact "saved Xd" — null until the user explicitly Saves to scripts.</summary>
+        public string LastSavedText => Source.LastSavedTs.HasValue
+            ? "saved " + RelativeTime.Format(Source.LastSavedTs.Value)
+            : null;
+
+        public bool HasLastSaved => Source.LastSavedTs.HasValue;
 
         public string GitMonikerName
         {

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Windows.Media;
 using AutoTabOrganiser.Git;
 using AutoTabOrganiser.Storage;
+using AutoTabOrganiser.Util;
 
 namespace AutoTabOrganiser.UI.ViewModels
 {
@@ -51,6 +52,16 @@ namespace AutoTabOrganiser.UI.ViewModels
         public string FileName => string.IsNullOrEmpty(FilePath)
             ? (Source.Name ?? "(unnamed)")
             : Path.GetFileName(FilePath);
+
+        /// <summary>Compact "edited Xm" using the underlying tab's latest-snapshot timestamp.</summary>
+        public string LastEditedText => "edited " + RelativeTime.Format(Source.Ts);
+
+        /// <summary>Compact "saved Xd" or null if the tab was never saved to disk.</summary>
+        public string LastSavedText => Source.LastSavedTs.HasValue
+            ? "saved " + RelativeTime.Format(Source.LastSavedTs.Value)
+            : null;
+
+        public bool HasLastSaved => Source.LastSavedTs.HasValue;
 
         public string Letter
         {

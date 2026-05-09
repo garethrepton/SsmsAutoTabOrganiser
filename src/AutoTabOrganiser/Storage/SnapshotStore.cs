@@ -358,8 +358,12 @@ namespace AutoTabOrganiser.Storage
                     // WriteSnapshot's INSERT/ON CONFLICT) so this is a single-table query;
                     // a JOIN here would re-introduce ambiguous-column errors against the
                     // unqualified column names the search-query parser emits.
+                    // last_saved_ts: scalar subquery for the most recent saved-reason snapshot
+                    // per tab. Subquery (rather than JOIN) keeps column names unambiguous so
+                    // the search-query parser's unqualified WHERE clauses don't break.
                     cmd.CommandText =
-                        "SELECT tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database " +
+                        "SELECT tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database, " +
+                        "       (SELECT MAX(s.ts) FROM snapshots s WHERE s.tab_id = tabs_latest.tab_id AND s.reason = 'saved') AS last_saved_ts " +
                         "FROM tabs_latest " +
                         (string.IsNullOrEmpty(sqlWhere) ? "" : "WHERE " + sqlWhere + " ") +
                         "ORDER BY " + (string.IsNullOrEmpty(orderBy) ? "ts DESC" : orderBy) + ";";
@@ -384,6 +388,7 @@ namespace AutoTabOrganiser.Storage
                                 Desc = rd.IsDBNull(8) ? null : rd.GetString(8),
                                 Server = rd.IsDBNull(9) ? null : rd.GetString(9),
                                 Database = rd.IsDBNull(10) ? null : rd.GetString(10),
+                                LastSavedTs = rd.IsDBNull(11) ? (long?)null : rd.GetInt64(11),
                             });
                         }
                     }

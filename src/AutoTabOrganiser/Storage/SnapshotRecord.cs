@@ -27,7 +27,8 @@ namespace AutoTabOrganiser.Storage
         public string Folder { get; set; }
         public string Name { get; set; }
         public string TagsCsv { get; set; }
-        public long Ts { get; set; }
+        public long Ts { get; set; }                  // latest snapshot of any reason — "last edited"
+        public long? LastSavedTs { get; set; }        // latest snapshot with reason='saved' — null if never explicitly saved
         public bool IsOpen { get; set; }
         public bool IsDirty { get; set; }
         public string Desc { get; set; }
