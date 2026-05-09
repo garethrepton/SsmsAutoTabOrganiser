@@ -620,7 +620,7 @@ namespace AutoTabOrganiser.UI.ViewModels
 
                 Marshal(() =>
                 {
-                    var rows = new List<StoredQueryRowViewModel>();
+                    var desired = new List<(TabSummary t, GitFileStatus st, string path)>();
                     foreach (var t in tabs)
                     {
                         if (!pathByTab.TryGetValue(t.TabId, out var path)) continue;
@@ -632,20 +632,84 @@ namespace AutoTabOrganiser.UI.ViewModels
                             || st == GitFileStatus.Untracked
                             || st == GitFileStatus.Staged)
                         {
-                            rows.Add(new StoredQueryRowViewModel(t, st, path));
+                            desired.Add((t, st, path));
                         }
                     }
-                    ReplaceCollection(StoredQueries, rows);
-                    StoredQueriesHeader = rows.Count == 0
+
+                    ApplyStoredQueriesDiff(desired);
+                    StoredQueriesHeader = StoredQueries.Count == 0
                         ? "SOURCE CONTROL — STORED QUERIES"
-                        : $"SOURCE CONTROL — STORED QUERIES ({rows.Count})";
-                    StoredQueriesEmptyVisible = rows.Count == 0;
+                        : $"SOURCE CONTROL — STORED QUERIES ({StoredQueries.Count})";
+                    StoredQueriesEmptyVisible = StoredQueries.Count == 0;
 
                     // Keep .git watchers in sync with the current set of stored-query
                     // files so external git ops trigger refreshes without polling.
                     EnsureGitDirWatchers(paths);
                 });
             });
+        }
+
+        /// <summary>
+        /// Reconcile <see cref="StoredQueries"/> with <paramref name="desired"/> using minimal
+        /// mutations: rows whose tab is still wanted have their <see cref="StoredQueryRowViewModel.Status"/>
+        /// updated in place (INPC re-renders the cells); orphan rows are removed; new tabs are
+        /// inserted; out-of-order rows are moved.
+        ///
+        /// Why bother: never replace a row instance whose tab is still on the list. A
+        /// <c>Clear()</c>+<c>Add()</c> pass fires CollectionChanged.Reset which makes the
+        /// ListBox recreate every ListBoxItem — during that recreation, button hit-testing
+        /// briefly fails and rapid clicks on adjacent (or the same) row get dropped. That's
+        /// the same hazard <see cref="OptimisticSetGitStatus"/> avoids; this method makes the
+        /// .git-watcher-driven refresh that fires ~100ms after each git op equally safe.
+        /// </summary>
+        private void ApplyStoredQueriesDiff(List<(TabSummary t, GitFileStatus st, string path)> desired)
+        {
+            // Key by TabId, not FilePath: two tabs can map to the same on-disk file (same .sql
+            // opened in multiple SSMS windows, shared saved-snapshot path), so paths aren't
+            // unique in `desired`. Keying by path collapses duplicates and would crash Move()
+            // when two desired entries point at the same row.
+            string TabIdOf(StoredQueryRowViewModel r) => r?.Source?.TabId ?? "";
+
+            var desiredTabIds = new HashSet<string>(
+                desired.Select(d => d.t?.TabId ?? ""), StringComparer.Ordinal);
+
+            for (int i = StoredQueries.Count - 1; i >= 0; i--)
+            {
+                if (!desiredTabIds.Contains(TabIdOf(StoredQueries[i])))
+                    StoredQueries.RemoveAt(i);
+            }
+
+            var byTabId = new Dictionary<string, StoredQueryRowViewModel>(StringComparer.Ordinal);
+            foreach (var row in StoredQueries)
+            {
+                var tid = TabIdOf(row);
+                if (!string.IsNullOrEmpty(tid)) byTabId[tid] = row;
+            }
+
+            for (int i = 0; i < desired.Count; i++)
+            {
+                var d = desired[i];
+                var tid = d.t?.TabId ?? "";
+
+                if (i < StoredQueries.Count
+                    && string.Equals(TabIdOf(StoredQueries[i]), tid, StringComparison.Ordinal))
+                {
+                    StoredQueries[i].Status = d.st;
+                    continue;
+                }
+                if (!string.IsNullOrEmpty(tid) && byTabId.TryGetValue(tid, out var existing))
+                {
+                    var oldIndex = StoredQueries.IndexOf(existing);
+                    if (oldIndex >= 0 && oldIndex != i) StoredQueries.Move(oldIndex, i);
+                    existing.Status = d.st;
+                }
+                else
+                {
+                    var row = new StoredQueryRowViewModel(d.t, d.st, d.path);
+                    StoredQueries.Insert(i, row);
+                    if (!string.IsNullOrEmpty(tid)) byTabId[tid] = row;
+                }
+            }
         }
 
         private TabRowViewModel MakeRowVm(TabSummary t)

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="AutoTabOrganiser.b4f9e3d1-7c2a-4f8e-9b1a-6e3d5c8f7a2b" Version="0.1.24" Language="en-US" Publisher="Local" />
+    <Identity Id="AutoTabOrganiser.b4f9e3d1-7c2a-4f8e-9b1a-6e3d5c8f7a2b" Version="0.1.26" Language="en-US" Publisher="Local" />
     <DisplayName>Auto Tab Organiser</DisplayName>
     <Description xml:space="preserve">Auto-snapshots query tabs and organises them into a sidebar tree based on metadata in their comment headers.</Description>
     <MoreInfo>https://example.local/auto-tab-organiser</MoreInfo>
