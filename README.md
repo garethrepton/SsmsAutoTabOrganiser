@@ -17,10 +17,19 @@ behave for a while.
 
 It only targets **SSMS 21+** on **Windows 10/11**.
 
+## Download
+
+[**AutoTabOrganiser.vsix — latest release**](https://github.com/garethrepton/SsmsAutoTabOrganiser/releases/latest/download/AutoTabOrganiser.vsix)
+
+That URL always points at whichever release is marked latest on GitHub.
+Or browse [all releases](https://github.com/garethrepton/SsmsAutoTabOrganiser/releases)
+to grab a specific version.
+
 ## Install
 
-1. Build Release (`dotnet build -c Release` from the repo root) or
-   download a `.vsix` from a release.
+1. Download the latest `.vsix` (link above) — or build it yourself with
+   `dotnet build -c Release` from the repo root, output is in
+   `src/AutoTabOrganiser/bin/Release/net472/`.
 2. Close SSMS.
 3. Double-click `AutoTabOrganiser.vsix`, or run
    `VSIXInstaller.exe /quiet AutoTabOrganiser.vsix` against SSMS's

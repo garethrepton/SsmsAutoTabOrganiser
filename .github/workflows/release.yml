@@ -1,0 +1,71 @@
+name: Release VSIX
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2022
+
+    env:
+      Configuration: Release
+      DOTNET_NOLOGO: 'true'
+      DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: msbuild AutoTabOrganiser.sln -t:Restore -p:Configuration=${{ env.Configuration }}
+
+      - name: Build
+        run: msbuild AutoTabOrganiser.sln -p:Configuration=${{ env.Configuration }}
+
+      - name: Test
+        run: dotnet test tests/AutoTabOrganiser.Tests/AutoTabOrganiser.Tests.csproj -c ${{ env.Configuration }} --no-build --nologo
+
+      # Fail fast if someone tags `v0.1.31` without bumping the manifest. The release flow
+      # depends on the VSIX matching the tag because installers cache by version — installing
+      # a v0.1.31-tagged VSIX whose manifest still says 0.1.30 quietly no-ops on machines that
+      # already have 0.1.30 installed.
+      - name: Verify tag matches manifest version
+        shell: pwsh
+        run: |
+          $vsix = "src/AutoTabOrganiser/bin/${{ env.Configuration }}/net472/AutoTabOrganiser.vsix"
+          if (-not (Test-Path $vsix)) { throw "VSIX not found at $vsix" }
+          [xml]$m = Get-Content "src/AutoTabOrganiser/source.extension.vsixmanifest"
+          $manifestVer = $m.PackageManifest.Metadata.Identity.Version
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          if ($manifestVer -ne $tag) {
+            throw "Tag '$tag' doesn't match source.extension.vsixmanifest version '$manifestVer'. Bump the manifest before tagging."
+          }
+          Write-Host "Tag $tag matches manifest $manifestVer; VSIX size: $((Get-Item $vsix).Length) bytes"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: src/AutoTabOrganiser/bin/Release/net472/AutoTabOrganiser.vsix
+          generate_release_notes: true
+          fail_on_unmatched_files: true
