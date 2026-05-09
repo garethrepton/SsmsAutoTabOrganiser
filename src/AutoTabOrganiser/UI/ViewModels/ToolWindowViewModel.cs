@@ -197,6 +197,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         public ICommand CommitStoredQueryCommand { get; }
         public ICommand CommitAllStoredQueriesCommand { get; }
         public ICommand OpenStoredQueriesFolderCommand { get; }
+        public ICommand OpenStoredQueriesTerminalCommand { get; }
 
         public ICommand PinNewTagCommand { get; }
         public ICommand TogglePinTagCommand { get; }
@@ -249,10 +250,11 @@ namespace AutoTabOrganiser.UI.ViewModels
             CancelSaveScriptsCommand    = new RelayCommand(ClearPendingSave);
             BrowseSaveFolderCommand     = new RelayCommand(BrowseSaveFolder);
 
-            StageStoredQueryCommand        = new RelayCommand(p => StageStoredQuery(p as StoredQueryRowViewModel));
-            CommitStoredQueryCommand       = new RelayCommand(p => CommitStoredQuery(p as StoredQueryRowViewModel));
-            CommitAllStoredQueriesCommand  = new RelayCommand(CommitAllStoredQueries);
-            OpenStoredQueriesFolderCommand = new RelayCommand(OpenStoredQueriesFolder);
+            StageStoredQueryCommand          = new RelayCommand(p => StageStoredQuery(p as StoredQueryRowViewModel));
+            CommitStoredQueryCommand         = new RelayCommand(p => CommitStoredQuery(p as StoredQueryRowViewModel));
+            CommitAllStoredQueriesCommand    = new RelayCommand(CommitAllStoredQueries);
+            OpenStoredQueriesFolderCommand   = new RelayCommand(OpenStoredQueriesFolder);
+            OpenStoredQueriesTerminalCommand = new RelayCommand(OpenStoredQueriesTerminal);
 
             PinNewTagCommand     = new RelayCommand(PinNewTag);
             TogglePinTagCommand  = new RelayCommand(p => TogglePin(p as string));
@@ -436,6 +438,60 @@ namespace AutoTabOrganiser.UI.ViewModels
             // Replacement happens during the debounced RefreshStoredQueries; here we just
             // bump the in-memory cache so MakeRowVm picks up "Modified" if git is slow.
             _gitStatusByPath[changedPath] = GitFileStatus.Modified;
+        }
+
+        /// <summary>
+        /// Apply an immediate UI update for a known-good post-git-op state. Updates the
+        /// in-memory git-status cache, swaps the matching StoredQueries row in place
+        /// (or removes it when the new status is Clean), and refreshes the git icon on
+        /// the same tab anywhere else it's visible. Saves the user from waiting for the
+        /// async git-status query that <see cref="DebounceRefreshAll"/> will run later.
+        /// </summary>
+        private void OptimisticSetGitStatus(string filePath, GitFileStatus newStatus)
+        {
+            if (string.IsNullOrEmpty(filePath)) return;
+            _gitStatusByPath[filePath] = newStatus;
+
+            // StoredQueries: replace or remove the row.
+            for (int i = StoredQueries.Count - 1; i >= 0; i--)
+            {
+                var row = StoredQueries[i];
+                if (!string.Equals(row.FilePath, filePath, StringComparison.OrdinalIgnoreCase)) continue;
+                if (newStatus == GitFileStatus.Clean)
+                    StoredQueries.RemoveAt(i);
+                else
+                    StoredQueries[i] = new StoredQueryRowViewModel(row.Source, newStatus, filePath);
+            }
+            StoredQueriesHeader = StoredQueries.Count == 0
+                ? "SOURCE CONTROL — STORED QUERIES"
+                : $"SOURCE CONTROL — STORED QUERIES ({StoredQueries.Count})";
+            StoredQueriesEmptyVisible = StoredQueries.Count == 0;
+
+            // Same file might be visible elsewhere — push the new git status onto its TabRow
+            // VMs in Tabs/Recent/Pinned. INotifyPropertyChanged on TabRowViewModel.GitStatus
+            // re-renders the icon without recreating the row, so no flicker.
+            UpdateGitStatusOn(Tabs);
+            UpdateGitStatusOn(Recent);
+            foreach (var section in PinnedSections) UpdateGitStatusOn(section.Items);
+        }
+
+        // A single coalesced full refresh runs after a brief settle period instead of one per
+        // git op. Without this, RefreshAll would run multiple times during a Commit-All burst,
+        // each cascading 5+ Task.Run git-status queries and replacing the StoredQueries
+        // collection — the source of the hover-flicker the user reported.
+        private DispatcherTimer _refreshAllDebounce;
+        private void DebounceRefreshAll()
+        {
+            Marshal(() =>
+            {
+                if (_refreshAllDebounce == null)
+                {
+                    _refreshAllDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+                    _refreshAllDebounce.Tick += (s, e) => { _refreshAllDebounce.Stop(); RefreshAll(); };
+                }
+                _refreshAllDebounce.Stop();
+                _refreshAllDebounce.Start();
+            });
         }
 
         /// <summary>Called by the package after each tab update; keeps lists in sync.</summary>
@@ -762,7 +818,8 @@ namespace AutoTabOrganiser.UI.ViewModels
             try
             {
                 if (!Directory.Exists(path)) Directory.CreateDirectory(path);
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+                var safe = path.Replace("\"", "");
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{safe}\"") { UseShellExecute = true });
             }
             catch (Exception ex) { _log?.Error("Open storage folder failed", ex); }
         }
@@ -771,7 +828,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             var path = _store?.Root;
             if (string.IsNullOrEmpty(path)) return;
-            try { System.Diagnostics.Process.Start("explorer.exe", $"\"{path}\""); } catch { }
+            try { System.Diagnostics.Process.Start("explorer.exe", $"\"{path.Replace("\"", "")}\""); } catch { }
         }
 
         private static void Copy(string text)
@@ -945,7 +1002,9 @@ namespace AutoTabOrganiser.UI.ViewModels
             _gitResolver.Invalidate();
             ClearPendingSave();
             Info("Saved " + fileName);
-            RefreshTabs();
+            // RefreshAll so the new file shows in StoredQueries with fresh git status, plus
+            // the git icon on the same tab in RECENT / search / pinned updates immediately.
+            RefreshAll();
         }
 
         private void ClearPendingSave()
@@ -1046,8 +1105,17 @@ namespace AutoTabOrganiser.UI.ViewModels
             }
             var r = GitHelper.Add(vm.FilePath, _log);
             if (!r.Ok) { Info("git add failed: " + (r.StdErr ?? r.Error ?? r.StdOut)); return; }
+
+            // Instant visual feedback: swap this row to Staged in place, push the new status
+            // to the in-memory dict, and update the git icon on the same tab in any other
+            // visible section. The async git-status query in RefreshAll catches edge cases
+            // (e.g. an MM partial-stage where there are still unstaged changes) but doesn't
+            // gate the visible button feedback on its 200-700ms latency.
+            OptimisticSetGitStatus(vm.FilePath, GitFileStatus.Staged);
+            Info("Staged " + Path.GetFileName(vm.FilePath));
+
             _gitResolver.Invalidate();
-            RefreshStoredQueries();
+            DebounceRefreshAll();
         }
 
         private void CommitStoredQuery(StoredQueryRowViewModel vm)
@@ -1066,8 +1134,12 @@ namespace AutoTabOrganiser.UI.ViewModels
             var commit = GitHelper.Commit(vm.FilePath, msg, _log);
             if (!commit.Ok) { Info("git commit failed: " + (commit.StdErr ?? commit.Error ?? commit.StdOut)); return; }
 
+            // Committed = no longer dirty; remove the row from the section immediately.
+            OptimisticSetGitStatus(vm.FilePath, GitFileStatus.Clean);
+            Info("Committed " + Path.GetFileName(vm.FilePath));
+
             _gitResolver.Invalidate();
-            RefreshStoredQueries();
+            DebounceRefreshAll();
         }
 
         private void CommitAllStoredQueries()
@@ -1103,8 +1175,13 @@ namespace AutoTabOrganiser.UI.ViewModels
             }
 
             CommitMessage = "";
+
+            // Optimistic: every row we just committed becomes Clean — drop them all.
+            foreach (var r in rows.ToList())
+                OptimisticSetGitStatus(r.FilePath, GitFileStatus.Clean);
+
             _gitResolver.Invalidate();
-            RefreshStoredQueries();
+            DebounceRefreshAll();
         }
 
         /// <summary>Open the configured Stored Queries folder in Explorer.</summary>
@@ -1112,17 +1189,78 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             try
             {
-                var s = _settings?.Load();
-                var path = s?.SavedScripts?.FolderPath;
-                if (string.IsNullOrWhiteSpace(path))
-                {
-                    var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-                    path = Path.Combine(docs, "AutoTabOrganiser", "Scripts");
-                }
+                var path = ResolveStoredQueriesPath();
                 Directory.CreateDirectory(path);
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{path}\"") { UseShellExecute = true });
+                // Strip any embedded quote chars before interpolating (Windows paths can't
+                // contain them anyway, but settings.json is editable so we don't trust input).
+                var safe = path.Replace("\"", "");
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{safe}\"") { UseShellExecute = true });
             }
             catch (Exception ex) { _log?.Error("Open stored-queries folder failed", ex); }
+        }
+
+        /// <summary>
+        /// Open a terminal at the configured Stored Queries folder. Tries Windows Terminal
+        /// (<c>wt.exe</c>) first since it's the modern default on Win11/recent Win10 dev
+        /// installs; falls back to PowerShell, then cmd.exe.
+        /// </summary>
+        private void OpenStoredQueriesTerminal()
+        {
+            string path;
+            try
+            {
+                path = ResolveStoredQueriesPath();
+                Directory.CreateDirectory(path);
+            }
+            catch (Exception ex) { _log?.Error("Resolve stored-queries path failed", ex); return; }
+
+            // Each launcher uses ShellExecute (UseShellExecute=true) so PATH/App-Execution-
+            // Alias resolution applies and we don't have to know the absolute path of wt.exe.
+            // Strip embedded quotes before interpolating into the wt.exe arg string —
+            // settings.json is user-editable, defence in depth.
+            var safePath = path.Replace("\"", "");
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("wt.exe", $"-d \"{safePath}\"")
+                {
+                    UseShellExecute = true
+                });
+                return;
+            }
+            catch { /* Windows Terminal not installed — fall through */ }
+
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("powershell.exe", "-NoExit")
+                {
+                    UseShellExecute = true,
+                    WorkingDirectory = path
+                });
+                return;
+            }
+            catch { /* fall through to cmd */ }
+
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/K")
+                {
+                    UseShellExecute = true,
+                    WorkingDirectory = path
+                });
+            }
+            catch (Exception ex) { _log?.Error("Open terminal failed", ex); }
+        }
+
+        private string ResolveStoredQueriesPath()
+        {
+            var s = _settings?.Load();
+            var path = s?.SavedScripts?.FolderPath;
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+                path = Path.Combine(docs, "AutoTabOrganiser", "Scripts");
+            }
+            return path;
         }
 
         private void RunGit(TabSummary t, string verb, Func<string, GitResult> op)
@@ -1139,10 +1277,34 @@ namespace AutoTabOrganiser.UI.ViewModels
             try
             {
                 var r = op(path);
-                if (!r.Ok && string.IsNullOrEmpty(r.Error))
-                    Info($"git {verb} exited with code {r.ExitCode}: {(r.StdErr ?? r.StdOut)}");
+                if (!r.Ok)
+                {
+                    // Surface every kind of failure: the GitResult.Error string (set when we
+                    // never started the process), or the process's stderr/stdout, or just the
+                    // exit code. The previous logic gated on Error being empty and silently
+                    // swallowed any failure that *did* populate it.
+                    var why = !string.IsNullOrEmpty(r.Error) ? r.Error
+                            : !string.IsNullOrEmpty(r.StdErr) ? r.StdErr
+                            : !string.IsNullOrEmpty(r.StdOut) ? r.StdOut
+                            : ("exit code " + r.ExitCode);
+                    Info($"git {verb} failed: {why}");
+                    return;
+                }
+
+                // Optimistic feedback per verb so the row visibly changes immediately,
+                // followed by a debounced full refresh that catches edge cases.
+                if (verb == "add")    OptimisticSetGitStatus(path, GitFileStatus.Staged);
+                if (verb == "commit") OptimisticSetGitStatus(path, GitFileStatus.Clean);
+
+                _gitResolver.Invalidate();
+                DebounceRefreshAll();
+                Info($"git {verb}: {Path.GetFileName(path)}");
             }
-            catch (Exception ex) { _log?.Error("git command failed", ex); }
+            catch (Exception ex)
+            {
+                _log?.Error("git command failed", ex);
+                Info($"git {verb} failed: {ex.Message}");
+            }
         }
 
         // ---- info bar ----
