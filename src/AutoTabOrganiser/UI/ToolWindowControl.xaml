@@ -217,8 +217,8 @@
 
                     <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center"
                                 Margin="0,0,6,0">
-                        <Ellipse Width="8" Height="8" Margin="0,0,4,0"
-                                 Fill="{DynamicResource {x:Static vsui:EnvironmentColors.AccentMediumBrushKey}}"
+                        <Ellipse Width="9" Height="9" Margin="0,0,4,0"
+                                 Fill="#22C55E" Stroke="White" StrokeThickness="1"
                                  ToolTip="Open in editor"
                                  Visibility="{Binding IsOpen, Converter={StaticResource BoolToVis}}" />
                         <imaging:CrispImage Width="14" Height="14"

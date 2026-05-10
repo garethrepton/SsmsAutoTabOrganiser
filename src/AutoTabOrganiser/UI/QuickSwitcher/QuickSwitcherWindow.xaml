@@ -77,9 +77,9 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
-                    <Ellipse Grid.Column="0" Width="8" Height="8" Margin="0,0,8,0"
+                    <Ellipse Grid.Column="0" Width="9" Height="9" Margin="0,0,8,0"
                              VerticalAlignment="Center"
-                             Fill="{DynamicResource {x:Static vsui:EnvironmentColors.AccentMediumBrushKey}}"
+                             Fill="#22C55E" Stroke="White" StrokeThickness="1"
                              Visibility="{Binding IsOpen, Converter={StaticResource BoolToVis}}" />
 
                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
