@@ -139,6 +139,21 @@ Settings are persisted to `%APPDATA%\AutoTabOrganiser\settings.json`.
 
 If something goes wrong, the daily log is the first place to look.
 
+## Pre-commit hook
+
+This repo ships a `gitleaks` pre-commit hook in `.githooks/pre-commit`
+that scans both the staged diff and the full working tree for secrets.
+
+One-time setup per clone:
+
+```
+scoop install gitleaks      # or see https://github.com/gitleaks/gitleaks#installing
+git config core.hooksPath .githooks
+```
+
+A scan takes well under a second on this repo. Bypass with
+`git commit --no-verify` if you really need to.
+
 ## Bug reports
 
 Open an issue with the relevant tail of the log. SSMS version, OS

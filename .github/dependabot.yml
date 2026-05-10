@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      # Pinned to the VS 17.x SDK that ships with SSMS 21+. Bumping these
+      # without revalidating SSMS compatibility tends to break startup.
+      - dependency-name: "Microsoft.VisualStudio.*"
+      - dependency-name: "Microsoft.VSSDK.*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

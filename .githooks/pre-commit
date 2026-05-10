@@ -1,0 +1,19 @@
+#!/bin/sh
+# Block commits that introduce secrets. Scans staged diff and the full
+# working tree (so a secret sitting in an unstaged or untracked file
+# still trips it). Bypass with `git commit --no-verify` if you must.
+#
+# One-time setup per clone:
+#   git config core.hooksPath .githooks
+
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "gitleaks: command not found." >&2
+    echo "Install:  scoop install gitleaks" >&2
+    echo "Or see:   https://github.com/gitleaks/gitleaks#installing" >&2
+    exit 1
+fi
+
+gitleaks git  --staged --redact --no-banner
+gitleaks dir           --redact --no-banner .
