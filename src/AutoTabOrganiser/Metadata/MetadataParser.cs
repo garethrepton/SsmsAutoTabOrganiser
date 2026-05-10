@@ -79,7 +79,7 @@ namespace AutoTabOrganiser.Metadata
 
             meta.CommentBlockEndExclusive = lastCommentLineIndex < 0 ? 0 : lineEndExclusiveOffsets[lastCommentLineIndex];
 
-            ExtractTagsFromAllComments(text, meta.Tags);
+            ExtractTagsFromHeaderComments(text, meta.CommentBlockEndExclusive, meta.Tags);
 
             return meta;
         }
@@ -146,12 +146,14 @@ namespace AutoTabOrganiser.Metadata
             return lines;
         }
 
-        // Extract every #word that appears inside any -- or /* */ comment, anywhere in the file.
-        public static void ExtractTagsFromAllComments(string text, List<string> outTags)
+        // Extract every #word that appears inside any -- or /* */ comment within the leading
+        // header block (chars [0, endExclusive)). Restricting to the header avoids picking up
+        // things like `-- create #temp_results` later in the file as if they were tags.
+        public static void ExtractTagsFromHeaderComments(string text, int endExclusive, List<string> outTags)
         {
-            if (string.IsNullOrEmpty(text)) return;
+            if (string.IsNullOrEmpty(text) || endExclusive <= 0) return;
             var seen = new HashSet<string>(StringComparer.Ordinal);
-            int i = 0, len = text.Length;
+            int i = 0, len = Math.Min(text.Length, endExclusive);
             bool inLineComment = false;
             bool inBlockComment = false;
 

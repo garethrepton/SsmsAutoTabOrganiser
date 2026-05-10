@@ -384,6 +384,20 @@
                     <imaging:CrispImage Width="16" Height="16"
                                         Moniker="{x:Static catalog:KnownMonikers.SettingsFile}" />
                 </Button>
+                <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Open config folder (containing settings.json and logs)"
+                        Command="{Binding OpenConfigFolderCommand}">
+                    <imaging:CrispImage Width="16" Height="16"
+                                        Moniker="{x:Static catalog:KnownMonikers.FolderClosed}" />
+                </Button>
+                <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Open temp output folder (where snapshots are materialised when opened)"
+                        Command="{Binding OpenTempOutputFolderCommand}">
+                    <imaging:CrispImage Width="16" Height="16"
+                                        Moniker="{x:Static catalog:KnownMonikers.OpenFolder}" />
+                </Button>
             </StackPanel>
         </Border>
 

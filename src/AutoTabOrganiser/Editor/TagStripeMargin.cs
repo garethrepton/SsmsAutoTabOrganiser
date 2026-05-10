@@ -72,7 +72,7 @@ namespace AutoTabOrganiser.Editor
 
             var text = SafeSnapshotText();
             var tags = new List<string>();
-            try { MetadataParser.ExtractTagsFromAllComments(text, tags); }
+            try { tags = MetadataParser.Parse(text).Tags; }
             catch { /* parser is defensive but be paranoid in the editor */ }
 
             Children.Clear();

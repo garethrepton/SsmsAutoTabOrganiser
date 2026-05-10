@@ -41,7 +41,7 @@ namespace AutoTabOrganiser.Tests
         }
 
         [Fact]
-        public void Tags_FromCommentBlockAndElsewhere()
+        public void Tags_OnlyFromHeader_NotFromBodyComments()
         {
             var text =
                 "-- @folder: x\n" +
@@ -49,18 +49,20 @@ namespace AutoTabOrganiser.Tests
                 "SELECT TOP 10 * FROM dbo.X;\n" +
                 "-- middle comment with #shard-3\n" +
                 "/* block comment with #archive */\n" +
-                "SELECT * FROM #temp_results;\n"; // # outside comment - must NOT be a tag
+                "SELECT * FROM #temp_results;\n";
             var m = MetadataParser.Parse(text);
-            m.Tags.Should().BeEquivalentTo("prod", "performance", "shard-3", "archive");
+            m.Tags.Should().BeEquivalentTo("prod", "performance");
+            m.Tags.Should().NotContain("shard-3");
+            m.Tags.Should().NotContain("archive");
             m.Tags.Should().NotContain("temp_results");
         }
 
         [Fact]
-        public void NoCommentBlock_StillParsesTags()
+        public void NoCommentBlock_NoTags()
         {
             var text = "SELECT 1; /* #only-here */\n";
             var m = MetadataParser.Parse(text);
-            m.Tags.Should().Contain("only-here");
+            m.Tags.Should().BeEmpty();
             m.CommentBlockEndExclusive.Should().Be(0);
         }
 

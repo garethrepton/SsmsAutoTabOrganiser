@@ -182,6 +182,8 @@ namespace AutoTabOrganiser.UI.ViewModels
 
         // ---- commands ----
         public ICommand OpenStorageCommand { get; }
+        public ICommand OpenConfigFolderCommand { get; }
+        public ICommand OpenTempOutputFolderCommand { get; }
         public ICommand OpenSettingsCommand { get; }
         public ICommand SnapshotNowCommand { get; }
         public ICommand QuickSwitcherCommand { get; }
@@ -250,8 +252,10 @@ namespace AutoTabOrganiser.UI.ViewModels
 
             StoragePath = _store?.Root ?? "(unknown)";
 
-            OpenStorageCommand   = new RelayCommand(OpenStorage);
-            OpenSettingsCommand  = new RelayCommand(() => _openSettings?.Invoke());
+            OpenStorageCommand          = new RelayCommand(OpenStorage);
+            OpenConfigFolderCommand     = new RelayCommand(OpenConfigFolder);
+            OpenTempOutputFolderCommand = new RelayCommand(OpenTempOutputFolder);
+            OpenSettingsCommand         = new RelayCommand(() => _openSettings?.Invoke());
             SnapshotNowCommand   = new RelayCommand(() => _snapshotNow?.Invoke());
             QuickSwitcherCommand = new RelayCommand(() => _quickSwitcher?.Invoke());
             TagConfigCommand     = new RelayCommand(() => _tagConfig?.Invoke());
@@ -905,6 +909,37 @@ namespace AutoTabOrganiser.UI.ViewModels
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{safe}\"") { UseShellExecute = true });
             }
             catch (Exception ex) { _log?.Error("Open storage folder failed", ex); }
+        }
+
+        private void OpenConfigFolder()
+        {
+            var file = _settings?.FilePath;
+            if (string.IsNullOrEmpty(file)) return;
+            try
+            {
+                var dir = Path.GetDirectoryName(file);
+                if (string.IsNullOrEmpty(dir)) return;
+                Directory.CreateDirectory(dir);
+                var safe = dir.Replace("\"", "");
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{safe}\"") { UseShellExecute = true });
+            }
+            catch (Exception ex) { _log?.Error("Open config folder failed", ex); }
+        }
+
+        private void OpenTempOutputFolder()
+        {
+            var root = _store?.Root;
+            if (string.IsNullOrEmpty(root)) return;
+            try
+            {
+                // OpenSnapshotInNewTabAsync materialises snapshots into <store-root>/open before
+                // handing them to SSMS — that's the "temporary output" the user is after.
+                var dir = Path.Combine(root, "open");
+                Directory.CreateDirectory(dir);
+                var safe = dir.Replace("\"", "");
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{safe}\"") { UseShellExecute = true });
+            }
+            catch (Exception ex) { _log?.Error("Open temp output folder failed", ex); }
         }
 
         private void RevealSnapshot()

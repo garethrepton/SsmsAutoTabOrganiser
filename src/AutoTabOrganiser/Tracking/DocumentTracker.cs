@@ -366,6 +366,18 @@ namespace AutoTabOrganiser.Tracking
         private void PollOnUiThread()
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+
+            // Pick up any open SQL docs we haven't attached yet. The startup RDT walk plus
+            // OnAfterFirstDocumentLock should cover most cases, but tabs that were already
+            // open before the package loaded — or ones whose buffer wasn't ready when the
+            // event fired — can slip through. AttachIfSqlDoc is idempotent (dedupes on
+            // _pipelines), so re-walking each tick is cheap.
+            try
+            {
+                foreach (var info in _rdt) AttachIfSqlDoc(info.DocCookie, info.Moniker);
+            }
+            catch (Exception ex) { _log.Debug("RDT rescan failed: " + ex.Message); }
+
             List<KeyValuePair<uint, SnapshotPipeline>> snapshot;
             lock (_pipelines) snapshot = new List<KeyValuePair<uint, SnapshotPipeline>>(_pipelines);
 
