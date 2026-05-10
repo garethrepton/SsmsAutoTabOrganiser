@@ -32,13 +32,15 @@ namespace AutoTabOrganiser.Tracking
         private readonly Logger _log;
         private readonly Action<string> _onTabUpdated;
         private readonly Action<string> _onTabClosed;
+        private readonly Func<bool> _isShuttingDown;
         private readonly Dictionary<uint, SnapshotPipeline> _pipelines = new Dictionary<uint, SnapshotPipeline>();
         private uint _cookie;
         private Timer _pollTimer;
 
         private DocumentTracker(IServiceProvider sp, IVsEditorAdaptersFactoryService adapterFactory,
                                 SnapshotStore store, SettingsStore settings, Logger log,
-                                Action<string> onTabUpdated, Action<string> onTabClosed)
+                                Action<string> onTabUpdated, Action<string> onTabClosed,
+                                Func<bool> isShuttingDown)
         {
             _sp = sp;
             _adapterFactory = adapterFactory;
@@ -48,6 +50,7 @@ namespace AutoTabOrganiser.Tracking
             _log = log;
             _onTabUpdated = onTabUpdated;
             _onTabClosed = onTabClosed;
+            _isShuttingDown = isShuttingDown;
         }
 
         public static async Task<DocumentTracker> CreateAsync(IAsyncServiceProvider asp,
@@ -57,10 +60,11 @@ namespace AutoTabOrganiser.Tracking
                                                               Logger log,
                                                               Action<string> onTabUpdated,
                                                               Action<string> onTabClosed,
+                                                              Func<bool> isShuttingDown,
                                                               CancellationToken ct)
         {
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
-            var t = new DocumentTracker((IServiceProvider)asp, adapterFactory, store, settings, log, onTabUpdated, onTabClosed);
+            var t = new DocumentTracker((IServiceProvider)asp, adapterFactory, store, settings, log, onTabUpdated, onTabClosed, isShuttingDown);
             t._cookie = t._rdt.Advise(t);
             log.Info("DocumentTracker: subscribed to RDT.");
 
@@ -196,6 +200,13 @@ namespace AutoTabOrganiser.Tracking
             }
             try
             {
+                // SSMS shutdown path: skip the close-snapshot cascade. With many tabs open it
+                // would write one redundant "closed" snapshot per tab through a single lock,
+                // each followed by a UI refresh — adding seconds to shutdown for no value
+                // (latest content is already snapshotted, and is_open is reset on next launch
+                // by SnapshotStore.ClearAllOpenFlags).
+                if (_isShuttingDown != null && _isShuttingDown()) return;
+
                 var text = ReadDocText(docCookie);
                 pipeline.OnClosed(text);
                 _log.Info($"[doc closed] {SafeName(moniker ?? pipeline.Moniker)}");

@@ -41,6 +41,10 @@ namespace AutoTabOrganiser
         private Timer _pruneTimer;
         private EnvDTE.WindowEvents _windowEvents;
         private EnvDTE.DTEEvents _dteEvents;
+        // Set when DTE fires OnBeginShutdown. Read by DocumentTracker to skip the
+        // close-snapshot cascade as SSMS tears down each open tab — those snapshots are
+        // duplicates of the latest content and just slow down shutdown.
+        internal volatile bool IsShuttingDown;
 
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
@@ -87,6 +91,7 @@ namespace AutoTabOrganiser
             _docTracker = await DocumentTracker.CreateAsync(this, adapterFactory, _store, _settings, _log,
                 onTabUpdated: tabId => RefreshToolWindowAsync(),
                 onTabClosed:  tabId => RefreshToolWindowAsync(),
+                isShuttingDown: () => IsShuttingDown,
                 cancellationToken);
 
             // Subscribe to SSMS window-activation so we can pin the user's currently-focused
@@ -99,6 +104,11 @@ namespace AutoTabOrganiser
                 {
                     _windowEvents = dte.Events.WindowEvents;
                     _windowEvents.WindowActivated += OnWindowActivated;
+
+                    // OnBeginShutdown fires before SSMS starts tearing down tabs, so by the time
+                    // DocumentTracker sees OnBeforeLastDocumentUnlock for each doc the flag is set.
+                    _dteEvents = dte.Events.DTEEvents;
+                    _dteEvents.OnBeginShutdown += () => IsShuttingDown = true;
                 }
             }
             catch (Exception ex) { _log.Debug("WindowEvents subscribe failed: " + ex.Message); }
