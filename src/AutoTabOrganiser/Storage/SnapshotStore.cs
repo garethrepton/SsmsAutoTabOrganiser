@@ -39,6 +39,7 @@ namespace AutoTabOrganiser.Storage
             EnsureSqliteProvider();
             OpenAndMigrate();
             BackfillContentFts();
+            BackfillDiskSnapshots();
         }
 
         private static void EnsureSqliteProvider()
@@ -184,8 +185,11 @@ namespace AutoTabOrganiser.Storage
             if (r == null) throw new ArgumentNullException(nameof(r));
             if (content == null) content = string.Empty;
 
-            // Single-file storage: content lives in the DB, no per-snapshot .sql files.
-            r.DiskPath = "";
+            // Dual storage: content lives in the DB (fast reads, FTS) AND in a per-snapshot
+            // .sql file on disk (browsable backup, external tooling). Disk write happens before
+            // the DB row is inserted so a crash mid-write leaves an orphan file rather than a DB
+            // row pointing at nothing — backfill on next start can re-derive the same path.
+            r.DiskPath = WriteContentToDisk(r, content);
             r.ContentSize = Encoding.UTF8.GetByteCount(content);
 
             lock (_gate)
@@ -549,6 +553,110 @@ namespace AutoTabOrganiser.Storage
                 }
 
                 return count;
+            }
+        }
+
+        /// <summary>
+        /// Writes the snapshot body to <c>snapshots/{yyyy-MM}/{shortId}_{name}.sql</c> under the
+        /// storage root and returns the path relative to <c>_snapshotsDir</c>. Deterministic from
+        /// (id, ts, name) so backfill produces the same path as the original write.
+        /// </summary>
+        private string WriteContentToDisk(SnapshotRecord r, string content)
+        {
+            var rel = BuildDiskRelPath(r);
+            var full = Path.Combine(_snapshotsDir, rel);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(full));
+                File.WriteAllText(full, content ?? string.Empty, Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                // Disk write is best-effort — DB still gets the content. Returning empty disk_path
+                // keeps the row consistent with "no on-disk copy" so backfill will retry later.
+                _log?.Warn($"Snapshot file write failed for id={r.Id}: {ex.Message}");
+                return "";
+            }
+            return rel;
+        }
+
+        private static string BuildDiskRelPath(SnapshotRecord r)
+        {
+            var bucket = DateTimeOffset.FromUnixTimeMilliseconds(r.Ts).UtcDateTime.ToString("yyyy-MM");
+            var shortId = (r.Id ?? "").Replace("-", "");
+            if (shortId.Length > 8) shortId = shortId.Substring(0, 8);
+            if (shortId.Length == 0) shortId = "noid";
+            var safeName = AutoTabOrganiser.Util.PathSanitiser.Sanitise(r.Name) ?? "untitled";
+            return Path.Combine(bucket, $"{shortId}_{safeName}.sql");
+        }
+
+        /// <summary>
+        /// Writes a .sql file for any snapshot row whose <c>disk_path</c> is empty/null but whose
+        /// <c>content</c> is present. Idempotent — safe to run on every startup. Deterministic
+        /// naming means re-running after a partial failure picks up where it left off.
+        /// </summary>
+        public int BackfillDiskSnapshots()
+        {
+            lock (_gate)
+            {
+                int written = 0;
+                try
+                {
+                    var pending = new List<SnapshotRecord>();
+                    using (var cmd = _conn.CreateCommand())
+                    {
+                        cmd.CommandText =
+                            "SELECT id, tab_id, name, ts, content " +
+                            "FROM snapshots " +
+                            "WHERE (disk_path IS NULL OR disk_path = '') AND content IS NOT NULL;";
+                        using (var rd = cmd.ExecuteReader())
+                        {
+                            while (rd.Read())
+                            {
+                                pending.Add(new SnapshotRecord
+                                {
+                                    Id = rd.GetString(0),
+                                    TabId = rd.GetString(1),
+                                    Name = rd.IsDBNull(2) ? null : rd.GetString(2),
+                                    Ts = rd.GetInt64(3),
+                                });
+                            }
+                        }
+                    }
+
+                    if (pending.Count == 0) return 0;
+                    _log?.Info($"Snapshot disk backfill: writing {pending.Count} file(s).");
+
+                    foreach (var r in pending)
+                    {
+                        string content;
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.CommandText = "SELECT content FROM snapshots WHERE id=$id;";
+                            Add(cmd, "$id", r.Id);
+                            content = cmd.ExecuteScalar() as string;
+                        }
+
+                        var rel = WriteContentToDisk(r, content ?? string.Empty);
+                        if (string.IsNullOrEmpty(rel)) continue;
+
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.CommandText = "UPDATE snapshots SET disk_path=$dp WHERE id=$id;";
+                            Add(cmd, "$dp", rel);
+                            Add(cmd, "$id", r.Id);
+                            cmd.ExecuteNonQuery();
+                        }
+                        written++;
+                    }
+
+                    _log?.Info($"Snapshot disk backfill complete: {written} file(s) written.");
+                }
+                catch (Exception ex)
+                {
+                    _log?.Warn("Snapshot disk backfill failed: " + ex.Message);
+                }
+                return written;
             }
         }
 
