@@ -17,6 +17,16 @@ namespace AutoTabOrganiser.Settings
         public int  FlushIntervalSeconds   { get; set; } = 60;
         public bool AutoInjectId           { get; set; } = true;
         public bool AutoTagInjectIntoHeader { get; set; } = true;
+        /// <summary>
+        /// When true, every Stored-Queries refresh runs the duplicate sweep:
+        /// stored .sql files with byte-equal canonical content (after stripping the
+        /// trailing @id block) are deduped on disk, and snapshots that share a
+        /// content_hash across tabs are pruned from the SQLite index. Throttled to
+        /// once per <see cref="SweepDuplicatesIntervalSeconds"/>.
+        /// </summary>
+        public bool AutoSweepDuplicates { get; set; } = true;
+        /// <summary>Throttle for <see cref="AutoSweepDuplicates"/>. Defaults to 5s.</summary>
+        public int  SweepDuplicatesIntervalSeconds { get; set; } = 5;
         public List<AutoTagRule> AutoTagRules { get; set; } = new List<AutoTagRule>();
     }
 

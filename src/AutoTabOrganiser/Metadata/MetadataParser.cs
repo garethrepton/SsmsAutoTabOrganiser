@@ -81,7 +81,37 @@ namespace AutoTabOrganiser.Metadata
 
             ExtractTagsFromHeaderComments(text, meta.CommentBlockEndExclusive, meta.Tags);
 
+            // Trailing @id wins over the legacy leading-block @id. MetadataWriter.SetId places
+            // the @id at the bottom of the file (with blank-line padding) so it stays out of
+            // the way of the editing area. For files written by the old writer the @id is
+            // still in the leading block — those round-trip via the loop above.
+            var trailingId = ScanTrailingId(lines);
+            if (!string.IsNullOrEmpty(trailingId)) meta.Id = trailingId;
+
             return meta;
+        }
+
+        /// <summary>
+        /// Returns the value of the LAST <c>-- @id: …</c> line in the file, or null if there
+        /// is no such line. Scans bottom-up so trailing blank-line padding doesn't matter.
+        /// </summary>
+        private static string ScanTrailingId(List<string> lines)
+        {
+            for (int li = lines.Count - 1; li >= 0; li--)
+            {
+                var line = lines[li];
+                var trimmed = line.TrimStart();
+                if (trimmed.Length == 0) continue;
+                if (!trimmed.StartsWith("--")) continue;
+
+                var keyMatch = KeyLineRegex.Match(line);
+                if (!keyMatch.Success) continue;
+                var key = keyMatch.Groups["key"].Value.ToLowerInvariant();
+                if (key != "id") continue;
+                var value = keyMatch.Groups["value"].Value.Trim();
+                return string.IsNullOrEmpty(value) ? null : value;
+            }
+            return null;
         }
 
         private static void ApplyKey(ParsedMetadata meta, string key, string value)

@@ -53,6 +53,10 @@ namespace AutoTabOrganiser.UI.ViewModels
             new ConcurrentDictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
         private readonly Dispatcher _dispatcher;
 
+        // Throttle for the duplicate sweep — Environment.TickCount when it last ran. Set to
+        // int.MinValue so the very first refresh after launch still runs the sweep.
+        private int _lastSweepTickMs = int.MinValue;
+
         // ---- observable collections ----
         public ObservableCollection<TabRowViewModel> Tabs { get; } = new ObservableCollection<TabRowViewModel>();
         public ObservableCollection<TabRowViewModel> Recent { get; } = new ObservableCollection<TabRowViewModel>();
@@ -618,6 +622,8 @@ namespace AutoTabOrganiser.UI.ViewModels
                     if (!string.IsNullOrEmpty(p)) { paths.Add(p); pathByTab[t.TabId] = p; }
                 }
 
+                MaybeSweepDuplicates(tabs, pathByTab, s);
+
                 Dictionary<string, GitFileStatus> map = null;
                 if (paths.Count > 0)
                 {
@@ -674,6 +680,66 @@ namespace AutoTabOrganiser.UI.ViewModels
                     EnsureGitDirWatchers(paths);
                 });
             });
+        }
+
+        /// <summary>
+        /// Throttled duplicate sweep — runs at most once per
+        /// <see cref="SnapshottingSettings.SweepDuplicatesIntervalSeconds"/>. Off when the
+        /// <see cref="SnapshottingSettings.AutoSweepDuplicates"/> setting is false.
+        /// Runs on the same background thread as the calling git-resolve work.
+        /// </summary>
+        private void MaybeSweepDuplicates(List<TabSummary> tabs, Dictionary<string, string> pathByTab, AppSettings s)
+        {
+            if (s?.Snapshotting == null || !s.Snapshotting.AutoSweepDuplicates) return;
+
+            var intervalMs = Math.Max(1000, s.Snapshotting.SweepDuplicatesIntervalSeconds * 1000);
+            var nowMs = Environment.TickCount;
+            // unchecked subtract handles tick-count wraparound after ~25 days of uptime.
+            if (_lastSweepTickMs != int.MinValue && unchecked(nowMs - _lastSweepTickMs) < intervalMs) return;
+            _lastSweepTickMs = nowMs;
+
+            try
+            {
+                if (pathByTab != null && pathByTab.Count > 0)
+                {
+                    var openByTabId = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var t in tabs) if (t.IsOpen && !string.IsNullOrEmpty(t.TabId)) openByTabId.Add(t.TabId);
+
+                    var candidates = new List<StoredQueryDuplicateSweeper.Candidate>(pathByTab.Count);
+                    foreach (var kv in pathByTab)
+                    {
+                        candidates.Add(new StoredQueryDuplicateSweeper.Candidate
+                        {
+                            TabId = kv.Key,
+                            FilePath = kv.Value,
+                        });
+                    }
+
+                    var fileSweeper = new StoredQueryDuplicateSweeper(_log);
+                    var fileResult = fileSweeper.Sweep(candidates, tabId => openByTabId.Contains(tabId));
+                    if (fileResult.DuplicatesDeleted > 0)
+                    {
+                        // Drop sweeped paths from pathByTab so the git-resolve below doesn't
+                        // run on files we just deleted.
+                        var deleted = new HashSet<string>(fileResult.DeletedPaths, StringComparer.OrdinalIgnoreCase);
+                        var keysToRemove = pathByTab
+                            .Where(kv => deleted.Contains(kv.Value))
+                            .Select(kv => kv.Key)
+                            .ToList();
+                        foreach (var k in keysToRemove) pathByTab.Remove(k);
+                    }
+                }
+
+                if (_store != null)
+                {
+                    try { _store.SweepCrossTabContentDuplicates(); }
+                    catch (Exception ex) { _log?.Warn("cross-tab dedup failed: " + ex.Message); }
+                }
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn("duplicate sweep failed: " + ex.Message);
+            }
         }
 
         /// <summary>

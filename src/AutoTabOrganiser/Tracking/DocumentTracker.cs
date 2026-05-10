@@ -310,14 +310,14 @@ namespace AutoTabOrganiser.Tracking
                     if (buffer == null) return;
                     var text = buffer.CurrentSnapshot.GetText();
                     var fresh = MetadataParser.Parse(text);
-                    if (!string.IsNullOrEmpty(fresh.Id) || fresh.CommentBlockEndExclusive == 0) return;
-                    var newText = MetadataWriter.InjectId(text, id, fresh.CommentBlockEndExclusive);
-                    if (newText == null) return;
+                    if (!string.IsNullOrEmpty(fresh.Id)) return;
+                    var newText = MetadataWriter.InjectId(text, id);
+                    if (string.IsNullOrEmpty(newText) || newText.Length <= text.Length) return;
                     using (var edit = buffer.CreateEdit())
                     {
-                        var insertion = newText.Substring(fresh.CommentBlockEndExclusive,
-                            newText.Length - text.Length);
-                        edit.Insert(fresh.CommentBlockEndExclusive, insertion);
+                        // Bottom-injection: everything new sits past the original buffer end.
+                        var insertion = newText.Substring(text.Length);
+                        edit.Insert(text.Length, insertion);
                         edit.Apply();
                     }
                     ok = true;

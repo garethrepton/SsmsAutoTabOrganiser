@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using AutoTabOrganiser.Util;
@@ -724,6 +725,138 @@ CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCAS
         public List<SnapshotRecord> ListAllSnapshotsForPruner()
         {
             return ListSnapshots(null, null, int.MaxValue);
+        }
+
+        /// <summary>
+        /// Cross-tab snapshot deduplication. Groups snapshots by <c>content_hash</c>; when a
+        /// hash appears under two or more distinct <c>tab_id</c>s, picks one snapshot to keep
+        /// (winner) and deletes the rest of the group's losers.
+        ///
+        /// Winner-selection: snapshot whose tab is currently <c>is_open=1</c> in
+        /// <c>tabs_latest</c>, else newest <c>ts</c>. Tie-break by <c>tab_id</c> for
+        /// determinism.
+        ///
+        /// Guards (mirrors <see cref="Pruner"/>): never deletes a snapshot whose
+        /// <c>reason</c> is <c>saved</c> or <c>closed</c>, and never deletes a snapshot
+        /// referenced by <c>tabs_latest.latest_snapshot_id</c>. So a tab's "current view"
+        /// is always preserved — only historical snapshots that happen to match another
+        /// tab's content can be pruned.
+        /// </summary>
+        public int SweepCrossTabContentDuplicates()
+        {
+            lock (_gate)
+            {
+                var open = new HashSet<string>(StringComparer.Ordinal);
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT tab_id FROM tabs_latest WHERE is_open=1;";
+                    using (var rd = cmd.ExecuteReader())
+                        while (rd.Read()) open.Add(rd.GetString(0));
+                }
+
+                var referenced = new HashSet<string>(StringComparer.Ordinal);
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT latest_snapshot_id FROM tabs_latest;";
+                    using (var rd = cmd.ExecuteReader())
+                        while (rd.Read()) if (!rd.IsDBNull(0)) referenced.Add(rd.GetString(0));
+                }
+
+                var rows = new List<DedupRow>();
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT id, tab_id, content_hash, ts, reason, disk_path FROM snapshots;";
+                    using (var rd = cmd.ExecuteReader())
+                    {
+                        while (rd.Read())
+                        {
+                            rows.Add(new DedupRow
+                            {
+                                Id       = rd.GetString(0),
+                                TabId    = rd.GetString(1),
+                                Hash     = rd.GetString(2),
+                                Ts       = rd.GetInt64(3),
+                                Reason   = rd.IsDBNull(4) ? "" : rd.GetString(4),
+                                DiskPath = rd.IsDBNull(5) ? null : rd.GetString(5),
+                            });
+                        }
+                    }
+                }
+
+                var toDelete = new List<DedupRow>();
+                foreach (var group in rows.GroupBy(r => r.Hash, StringComparer.Ordinal))
+                {
+                    var members = group.ToList();
+                    // Per-tab dedup is handled by SnapshotPipeline already. Only act when
+                    // the same hash spans multiple tabs.
+                    var distinctTabs = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var m in members) distinctTabs.Add(m.TabId);
+                    if (distinctTabs.Count < 2) continue;
+
+                    DedupRow winner = null;
+                    foreach (var m in members)
+                    {
+                        if (winner == null) { winner = m; continue; }
+                        bool mOpen = open.Contains(m.TabId);
+                        bool wOpen = open.Contains(winner.TabId);
+                        if (mOpen != wOpen)         { if (mOpen) winner = m; continue; }
+                        if (m.Ts != winner.Ts)      { if (m.Ts > winner.Ts) winner = m; continue; }
+                        if (string.CompareOrdinal(m.TabId, winner.TabId) < 0) winner = m;
+                    }
+
+                    foreach (var m in members)
+                    {
+                        if (m == winner) continue;
+                        if (m.Reason == "saved" || m.Reason == "closed") continue;
+                        if (referenced.Contains(m.Id)) continue;
+                        toDelete.Add(m);
+                    }
+                }
+
+                if (toDelete.Count == 0) return 0;
+
+                // Delete on-disk snapshot files first so a crash mid-loop leaves orphan rows
+                // (which BackfillDiskSnapshots can heal) rather than orphan files (which it can't).
+                foreach (var m in toDelete)
+                {
+                    if (string.IsNullOrEmpty(m.DiskPath)) continue;
+                    try
+                    {
+                        var full = Path.IsPathRooted(m.DiskPath) ? m.DiskPath : Path.Combine(_snapshotsDir, m.DiskPath);
+                        if (File.Exists(full)) File.Delete(full);
+                    }
+                    catch { /* best-effort — DB row will still be removed below */ }
+                }
+
+                using (var tx = _conn.BeginTransaction())
+                {
+                    using (var cmd = _conn.CreateCommand())
+                    {
+                        cmd.Transaction = tx;
+                        cmd.CommandText = "DELETE FROM snapshots WHERE id=$id;";
+                        var p = cmd.CreateParameter(); p.ParameterName = "$id"; cmd.Parameters.Add(p);
+                        foreach (var m in toDelete)
+                        {
+                            p.Value = m.Id;
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                    tx.Commit();
+                }
+
+                _log?.Info($"snapshot cross-tab dedup: deleted {toDelete.Count}.");
+                return toDelete.Count;
+            }
+        }
+
+        private sealed class DedupRow
+        {
+            public string Id;
+            public string TabId;
+            public string Hash;
+            public long   Ts;
+            public string Reason;
+            public string DiskPath;
         }
 
         public List<string> GetAllTags()

@@ -25,7 +25,7 @@
       </Button>
 
       <!-- The rest live on TabHistoryToolsGroup which is unparented (see above). They keep
-           their IDs/keybindings so the toolbar can invoke them and Ctrl+P / Ctrl+Alt+H,S
+           their IDs/keybindings so the toolbar can invoke them and Ctrl+Shift+T / Ctrl+Alt+H,S
            still work, but they no longer appear in any VS menu. -->
       <Button guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId" priority="0x0120" type="Button">
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
@@ -50,10 +50,11 @@
   <KeyBindings>
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId"
                 editor="guidVSStd97" key1="H" mod1="Control Alt" key2="S" />
-    <!-- Ctrl+P opens the quick switcher. SSMS doesn't bind Ctrl+P globally, so this
-         doesn't fight a built-in editor command the way Ctrl+T did. -->
+    <!-- Ctrl+Shift+T opens the quick switcher. Ctrl+T (Results to Text) and Ctrl+P
+         (Print, in some contexts) are both bound by SSMS; Ctrl+Shift+T isn't, so it
+         doesn't fight a built-in command. -->
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
-                editor="guidVSStd97" key1="P" mod1="Control" />
+                editor="guidVSStd97" key1="T" mod1="Control Shift" />
   </KeyBindings>
 
   <Symbols>
