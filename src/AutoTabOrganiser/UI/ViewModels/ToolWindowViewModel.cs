@@ -43,6 +43,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         private readonly Func<List<string>, List<string>, List<string>> _showTagPicker;
         private readonly Func<string, string> _promptCommitMessage;
         private readonly Action<string, string, GitFileStatus> _showGitDiff;
+        private readonly Func<string, string, bool> _confirm;
         private readonly Action<string> _showInfo;
         private readonly Action _onSavePromptShown;
         private readonly GitStatusResolver _gitResolver = new GitStatusResolver();
@@ -200,6 +201,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         public ICommand CopyIdCommand { get; }
         public ICommand CopyPathCommand { get; }
         public ICommand RevealSnapshotCommand { get; }
+        public ICommand DeleteTabCommand { get; }
 
         public ICommand SaveToScriptsCommand { get; }
         public ICommand ConfirmSaveScriptsCommand { get; }
@@ -234,6 +236,7 @@ namespace AutoTabOrganiser.UI.ViewModels
                                    Func<List<string>, List<string>, List<string>> showTagPicker,
                                    Func<string, string> promptCommitMessage,
                                    Action<string, string, GitFileStatus> showGitDiff,
+                                   Func<string, string, bool> confirm,
                                    Action<string> showInfo,
                                    Action onSavePromptShown,
                                    Dispatcher dispatcher)
@@ -250,6 +253,7 @@ namespace AutoTabOrganiser.UI.ViewModels
             _showTagPicker = showTagPicker;
             _promptCommitMessage = promptCommitMessage;
             _showGitDiff = showGitDiff;
+            _confirm = confirm;
             _showInfo = showInfo;
             _onSavePromptShown = onSavePromptShown;
             _dispatcher = dispatcher ?? Application.Current?.Dispatcher;
@@ -271,6 +275,7 @@ namespace AutoTabOrganiser.UI.ViewModels
             CopyIdCommand         = new RelayCommand(p => Copy((p as TabRowViewModel)?.Source?.TabId));
             CopyPathCommand       = new RelayCommand(p => Copy(LookupOriginalFilePath((p as TabRowViewModel)?.Source)));
             RevealSnapshotCommand = new RelayCommand(RevealSnapshot);
+            DeleteTabCommand      = new RelayCommand(p => DeleteTabRow(SourceOf(p)));
 
             SaveToScriptsCommand        = new RelayCommand(p => SaveTabToScriptsFolder((p as TabRowViewModel)?.Source));
             ConfirmSaveScriptsCommand   = new RelayCommand(ConfirmSaveScripts);
@@ -962,6 +967,43 @@ namespace AutoTabOrganiser.UI.ViewModels
             var snaps = _store.ListSnapshots("tab_id=$t",
                 new[] { new KeyValuePair<string, object>("$t", vm.Source.TabId) }, 1);
             if (snaps.Count > 0 && _openAsNewSnapshot != null) _ = _openAsNewSnapshot(snaps[0]);
+        }
+
+        private void DeleteTabRow(TabSummary t)
+        {
+            if (t == null || _store == null || string.IsNullOrEmpty(t.TabId)) return;
+
+            var name = string.IsNullOrEmpty(t.Name) ? "(unnamed)" : t.Name;
+            var message = $"Delete \"{name}\" from history?\n\nAll snapshots for this tab will be permanently removed.";
+            if (t.IsOpen)
+                message += "\n\nNote: the tab is still open in SSMS — a fresh entry will appear after the next snapshot.";
+
+            var ok = _confirm?.Invoke("Delete from history", message) ?? false;
+            if (!ok) return;
+
+            try
+            {
+                _store.DeleteTab(t.TabId);
+                _log?.Info($"User deleted tab from history: {t.TabId} ({name})");
+            }
+            catch (Exception ex)
+            {
+                _log?.Error($"DeleteTab failed for {t.TabId}", ex);
+                Info("Delete failed: " + ex.Message);
+                return;
+            }
+            RefreshAll();
+        }
+
+        /// <summary>Unwrap a row VM back to its <see cref="TabSummary"/>. The TabRowContextMenu
+        /// is shared by both the recent list (TabRowViewModel) and the stored-queries list
+        /// (StoredQueryRowViewModel), so commands that operate on the underlying tab need to
+        /// accept either.</summary>
+        private static TabSummary SourceOf(object p)
+        {
+            if (p is TabRowViewModel t) return t.Source;
+            if (p is StoredQueryRowViewModel s) return s.Source;
+            return null;
         }
 
         private void OpenStorage()

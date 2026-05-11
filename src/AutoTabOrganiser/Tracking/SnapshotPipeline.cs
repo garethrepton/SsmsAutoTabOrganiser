@@ -196,13 +196,13 @@ namespace AutoTabOrganiser.Tracking
 
         private string ResolveTabId(ParsedMetadata meta, string text)
         {
+            // Honour an existing `-- @id:` in the file (reopening a saved query). Otherwise
+            // mint a fresh GUID-derived id. Fingerprint-based reuse used to live here but
+            // collided new untitled tabs whose simple content (e.g. "SELECT 1") happened to
+            // hash to the same value as an earlier tab's snapshot.
             if (!string.IsNullOrEmpty(meta.Id)) { _resolvedTabId = meta.Id; return _resolvedTabId; }
             if (!string.IsNullOrEmpty(_resolvedTabId)) return _resolvedTabId;
-
-            var fp = Hashing.Fingerprint(text);
-            var minTs = DateTimeOffset.UtcNow.AddDays(-14).ToUnixTimeMilliseconds();
-            var found = _store.FindTabIdByFingerprint(fp, minTs);
-            _resolvedTabId = found ?? MetadataWriter.GenerateShortId();
+            _resolvedTabId = MetadataWriter.GenerateTabId();
             return _resolvedTabId;
         }
 

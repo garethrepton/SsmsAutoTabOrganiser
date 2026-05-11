@@ -12,11 +12,7 @@ namespace AutoTabOrganiser.Metadata
         /// </summary>
         public const int TrailingIdPaddingLines = 40;
 
-        public static string GenerateShortId()
-        {
-            var g = Guid.NewGuid().ToString("N");
-            return $"{g.Substring(0, 8)}-{g.Substring(8, 4)}-{g.Substring(12, 4)}";
-        }
+        public static string GenerateTabId() => Guid.NewGuid().ToString("D");
 
         /// <summary>
         /// Returns the new full text with <c>-- @id: &lt;value&gt;</c> placed at the bottom of

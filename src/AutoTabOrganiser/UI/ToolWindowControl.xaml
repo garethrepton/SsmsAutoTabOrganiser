@@ -326,6 +326,10 @@
                           Command="{Binding PlacementTarget.Tag.GitStatusCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                           CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
             </MenuItem>
+            <Separator />
+            <MenuItem Header="Delete from history…"
+                      Command="{Binding PlacementTarget.Tag.DeleteTabCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                      CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
         </ContextMenu>
 
         <Style x:Key="ItemContainerWithMenu" TargetType="ListBoxItem">

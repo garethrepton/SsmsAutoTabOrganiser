@@ -48,6 +48,7 @@ namespace AutoTabOrganiser.UI
                 showTagPicker: ShowTagPickerDialog,
                 promptCommitMessage: PromptForCommitMessage,
                 showGitDiff: ShowGitDiffDialog,
+                confirm: ShowConfirmDialog,
                 showInfo: null,
                 onSavePromptShown: () =>
                 {
@@ -252,6 +253,50 @@ namespace AutoTabOrganiser.UI
                 win.DialogResult = true;
             };
             return win.ShowDialog() == true ? picked : null;
+        }
+
+        /// <summary>
+        /// Modal Yes/No confirmation. Returns true when the user picks Yes; Enter triggers Yes,
+        /// Esc/Cancel triggers No.
+        /// </summary>
+        private static bool ShowConfirmDialog(string title, string message)
+        {
+            var win = new Window
+            {
+                Title = title ?? "Confirm",
+                Width = 420,
+                SizeToContent = SizeToContent.Height,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = Application.Current?.MainWindow,
+                ResizeMode = ResizeMode.NoResize
+            };
+
+            var grid = new Grid { Margin = new Thickness(12) };
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var text = new TextBlock
+            {
+                Text = message ?? "",
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            Grid.SetRow(text, 0);
+
+            var btnPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var yes = new Button { Content = "Delete", IsDefault = true, MinWidth = 80, Margin = new Thickness(0, 0, 8, 0) };
+            var no = new Button { Content = "Cancel", IsCancel = true, MinWidth = 80 };
+            btnPanel.Children.Add(yes);
+            btnPanel.Children.Add(no);
+            Grid.SetRow(btnPanel, 1);
+
+            grid.Children.Add(text);
+            grid.Children.Add(btnPanel);
+            win.Content = grid;
+
+            bool result = false;
+            yes.Click += (s, e) => { result = true; win.DialogResult = true; };
+            return win.ShowDialog() == true && result;
         }
 
         private static string PromptForCommitMessage(string fileName)

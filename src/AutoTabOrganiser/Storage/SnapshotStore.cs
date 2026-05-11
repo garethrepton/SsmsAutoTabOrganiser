@@ -334,23 +334,6 @@ namespace AutoTabOrganiser.Storage
             }
         }
 
-        public string FindTabIdByFingerprint(string fingerprint, long minTimestampMs)
-        {
-            lock (_gate)
-            {
-                using (var cmd = _conn.CreateCommand())
-                {
-                    cmd.CommandText =
-                        "SELECT s.tab_id FROM snapshots s WHERE s.content_hash=$fp AND s.ts>=$min " +
-                        "ORDER BY s.ts DESC LIMIT 1;";
-                    Add(cmd, "$fp", fingerprint);
-                    Add(cmd, "$min", minTimestampMs);
-                    var v = cmd.ExecuteScalar();
-                    return v as string;
-                }
-            }
-        }
-
         // ---------- reads (UI) ----------
 
         public List<TabSummary> ListTabs(string sqlWhere, IEnumerable<KeyValuePair<string, object>> parameters, string orderBy)
@@ -697,6 +680,70 @@ CREATE TABLE IF NOT EXISTS tabs_latest (tab_id TEXT PRIMARY KEY, latest_snapshot
 CREATE INDEX IF NOT EXISTS ix_tabs_latest_ts ON tabs_latest(ts DESC);
 CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCASE);
 ";
+
+        /// <summary>
+        /// Remove every trace of a tab: all snapshot rows + their on-disk files, the
+        /// <c>tabs_latest</c> row, and the FTS entry. Used by the sidebar's "Delete from
+        /// history" command. tabs_latest is deleted first so the FK from
+        /// <c>latest_snapshot_id</c> to <c>snapshots(id)</c> doesn't block snapshot deletion.
+        /// </summary>
+        public void DeleteTab(string tabId)
+        {
+            if (string.IsNullOrEmpty(tabId)) return;
+            lock (_gate)
+            {
+                var diskPaths = new List<string>();
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT disk_path FROM snapshots WHERE tab_id=$t;";
+                    Add(cmd, "$t", tabId);
+                    using (var rd = cmd.ExecuteReader())
+                        while (rd.Read()) if (!rd.IsDBNull(0)) diskPaths.Add(rd.GetString(0));
+                }
+
+                foreach (var disk in diskPaths)
+                {
+                    if (string.IsNullOrEmpty(disk)) continue;
+                    try
+                    {
+                        var full = Path.IsPathRooted(disk) ? disk : Path.Combine(_snapshotsDir, disk);
+                        if (File.Exists(full)) File.Delete(full);
+                    }
+                    catch { /* best-effort — DB rows still go below */ }
+                }
+
+                using (var tx = _conn.BeginTransaction())
+                {
+                    using (var cmd = _conn.CreateCommand())
+                    {
+                        cmd.Transaction = tx;
+                        cmd.CommandText = "DELETE FROM tabs_latest WHERE tab_id=$t;";
+                        Add(cmd, "$t", tabId);
+                        cmd.ExecuteNonQuery();
+                    }
+                    if (_ftsAvailable)
+                    {
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "DELETE FROM tab_content_fts WHERE tab_id=$t;";
+                            Add(cmd, "$t", tabId);
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+                    using (var cmd = _conn.CreateCommand())
+                    {
+                        cmd.Transaction = tx;
+                        // snapshot_tags has ON DELETE CASCADE on snapshot_id.
+                        cmd.CommandText = "DELETE FROM snapshots WHERE tab_id=$t;";
+                        Add(cmd, "$t", tabId);
+                        cmd.ExecuteNonQuery();
+                    }
+                    tx.Commit();
+                }
+                _log?.Info($"DeleteTab: removed tab_id={tabId} (snapshots={diskPaths.Count}).");
+            }
+        }
 
         public void DeleteSnapshot(string snapshotId)
         {

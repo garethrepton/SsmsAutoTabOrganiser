@@ -20,21 +20,5 @@ namespace AutoTabOrganiser.Tests
         {
             Hashing.Sha256Hex("a").Should().NotBe(Hashing.Sha256Hex("b"));
         }
-
-        [Fact]
-        public void Fingerprint_IgnoresLeadingComments()
-        {
-            var fp1 = Hashing.Fingerprint("-- @folder: x\nSELECT 1\n");
-            var fp2 = Hashing.Fingerprint("-- different comments\n-- @id: abc\nSELECT 1\n");
-            fp1.Should().Be(fp2);
-        }
-
-        [Fact]
-        public void Fingerprint_CollapsesWhitespace()
-        {
-            var fp1 = Hashing.Fingerprint("SELECT      1");
-            var fp2 = Hashing.Fingerprint("SELECT 1");
-            fp1.Should().Be(fp2);
-        }
     }
 }
