@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using AutoTabOrganiser.Editor;
 using AutoTabOrganiser.Git;
 using AutoTabOrganiser.Metadata;
 using AutoTabOrganiser.Settings;
@@ -96,6 +97,33 @@ namespace AutoTabOrganiser.UI.ViewModels
         public ObservableCollection<StoredQueryRowViewModel> StoredQueries { get; } = new ObservableCollection<StoredQueryRowViewModel>();
         public ObservableCollection<PinnedSectionViewModel> PinnedSections { get; } = new ObservableCollection<PinnedSectionViewModel>();
         public ObservableCollection<string> SaveSubfolderItems { get; } = new ObservableCollection<string>();
+        // Chip strip at the top of the unified Recent/Search section: distinct tags drawn from
+        // the user's last N opened tabs. Clicking a chip toggles `#tag` in SearchText.
+        public ObservableCollection<TagFilterChip> RecentTagChips { get; } = new ObservableCollection<TagFilterChip>();
+        public bool HasRecentTagChips => RecentTagChips.Count > 0;
+
+        /// <summary>
+        /// Items rendered in the unified list. When the search box is empty we show the
+        /// unfiltered Recent list (default mode the user opens to); typing flips this to the
+        /// search-filtered Tabs collection. Bind the ListBox's ItemsSource here so the
+        /// switch is a single property-change rather than a swap of two visually-stacked
+        /// list controls.
+        /// </summary>
+        public System.Collections.IEnumerable DisplayedItems
+            => string.IsNullOrEmpty(_searchText) ? (System.Collections.IEnumerable)Recent : Tabs;
+
+        public bool ListEmptyVisible
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(_searchText)) return Recent.Count == 0;
+                return Tabs.Count == 0;
+            }
+        }
+        public string ListEmptyText
+            => string.IsNullOrEmpty(_searchText)
+                ? "No recent tabs yet — open a query."
+                : "No tabs match. Try clearing the search.";
 
         // ---- search / sort ----
         private string _searchText = "";
@@ -105,10 +133,23 @@ namespace AutoTabOrganiser.UI.ViewModels
             get => _searchText;
             set
             {
-                if (_searchText == value) return;
-                _searchText = value ?? "";
+                var newValue = value ?? "";
+                if (_searchText == newValue) return;
+                var wasEmpty = string.IsNullOrEmpty(_searchText);
+                var nowEmpty = string.IsNullOrEmpty(newValue);
+                _searchText = newValue;
                 Notify();
                 Notify(nameof(ShowSearchClear));
+                // Empty↔non-empty transitions swap which collection the unified list shows.
+                if (wasEmpty != nowEmpty)
+                {
+                    Notify(nameof(DisplayedItems));
+                    Notify(nameof(ListEmptyVisible));
+                    Notify(nameof(ListEmptyText));
+                }
+                // Recompute chip highlight state regardless of transition — tags can be toggled
+                // mid-typing and the chip's IsActive must mirror what the parser will see.
+                RefreshTagChipActiveStates();
                 DebounceSearch();
             }
         }
@@ -599,6 +640,7 @@ namespace AutoTabOrganiser.UI.ViewModels
                 var rows = tabs.Select(MakeRowVm).ToList();
                 ReplaceCollection(Tabs, rows);
                 TabsEmptyVisible = rows.Count == 0;
+                Notify(nameof(ListEmptyVisible));
                 KickGitStatusUpdate(rows);
                 // RefreshRecent intentionally NOT called here. Recent is always the unfiltered
                 // top-N regardless of search text, so search keystrokes shouldn't trigger a
@@ -616,6 +658,7 @@ namespace AutoTabOrganiser.UI.ViewModels
                 var n = _settings?.Load()?.Ui?.RecentItemsCount ?? 12;
                 if (n <= 0) n = 12;
                 var tabs = _store.ListTabs(null, null, "ts DESC");
+                RefreshRecentTagChips(tabs);
                 var rows = tabs.Take(n).Select(MakeRowVm).ToList();
 
                 // Ensure the active tab is in the list even if truncated, so the user's
@@ -630,9 +673,152 @@ namespace AutoTabOrganiser.UI.ViewModels
                 ReplaceCollection(Recent, rows);
                 ReorderRecentForActive();
                 RecentEmptyVisible = rows.Count == 0;
+                Notify(nameof(ListEmptyVisible));
                 KickGitStatusUpdate(rows);
             }
             catch (Exception ex) { _log?.Error("RefreshRecent failed", ex); }
+        }
+
+        // ---- recent-tag chip strip ----
+
+        /// <summary>How many of the most-recent tabs to scan when building the chip strip.</summary>
+        private const int RecentTagChipScanWindow = 50;
+        /// <summary>Cap on the number of chips actually rendered, to keep the strip compact.</summary>
+        private const int RecentTagChipMaxCount = 20;
+
+        /// <summary>
+        /// Recompute <see cref="RecentTagChips"/> from the last N opened tabs (most-recent
+        /// first). Distinct, ordered by first appearance so the freshest activity surfaces
+        /// at the left. <paramref name="recentTabsDescByTs"/> is the same query result
+        /// <see cref="RefreshRecent"/> already loaded — passing it through avoids a second
+        /// round-trip to the store.
+        /// </summary>
+        private void RefreshRecentTagChips(IList<TabSummary> recentTabsDescByTs)
+        {
+            try
+            {
+                var overrides = _settings?.Load()?.Ui?.TagColours;
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var ordered = new List<string>();
+                int scanned = 0;
+                foreach (var t in recentTabsDescByTs)
+                {
+                    if (scanned++ >= RecentTagChipScanWindow) break;
+                    if (string.IsNullOrEmpty(t?.TagsCsv)) continue;
+                    foreach (var raw in t.TagsCsv.Split(','))
+                    {
+                        var tag = (raw ?? "").Trim();
+                        if (tag.Length == 0) continue;
+                        if (!seen.Add(tag)) continue;
+                        ordered.Add(tag);
+                        if (ordered.Count >= RecentTagChipMaxCount) goto done;
+                    }
+                }
+                done:
+
+                var newChips = ordered
+                    .Select(tag => new TagFilterChip(
+                        tag,
+                        TagColourResolver.Resolve(tag, overrides),
+                        new RelayCommand(() => ToggleTagInSearchText(tag))))
+                    .ToList();
+
+                RecentTagChips.Clear();
+                foreach (var c in newChips) RecentTagChips.Add(c);
+                RefreshTagChipActiveStates();
+                Notify(nameof(HasRecentTagChips));
+            }
+            catch (Exception ex) { _log?.Debug("RefreshRecentTagChips failed: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Mark each chip as active/inactive based on whether its tag is currently a
+        /// (non-negated) `#tag` token in <see cref="SearchText"/>. Cheap — no DB roundtrip,
+        /// safe to call on every keystroke from the SearchText setter.
+        /// </summary>
+        private void RefreshTagChipActiveStates()
+        {
+            var active = ExtractTagTokens(_searchText);
+            foreach (var chip in RecentTagChips)
+                chip.IsActive = active.Contains(chip.Text);
+        }
+
+        /// <summary>
+        /// Pull the active `#tag` tokens out of a SearchText string using the same
+        /// whitespace/quoting rules SearchQueryParser uses. Negated tokens (`-#tag`) are
+        /// intentionally NOT included — those represent an explicit exclusion and don't
+        /// imply the chip is "applied".
+        /// </summary>
+        private static HashSet<string> ExtractTagTokens(string text)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(text)) return set;
+            // Lightweight re-tokenise: same rules as SearchQueryParser.Tokenise (whitespace
+            // with " " quoting). Duplicating the tiny loop here keeps this VM free of a
+            // dependency on the parser's internal tokeniser.
+            var sb = new StringBuilder();
+            bool inQuote = false;
+            void Flush()
+            {
+                if (sb.Length == 0) return;
+                var token = sb.ToString();
+                sb.Clear();
+                if (token.Length > 1 && token[0] == '#') set.Add(token.Substring(1));
+            }
+            for (int i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                if (c == '"') { inQuote = !inQuote; continue; }
+                if (!inQuote && char.IsWhiteSpace(c)) { Flush(); }
+                else sb.Append(c);
+            }
+            Flush();
+            return set;
+        }
+
+        /// <summary>
+        /// Add or remove `#tag` from <see cref="SearchText"/>. Whitespace-aware so any
+        /// other typed terms are preserved. Tag matching is case-insensitive; if the user
+        /// has typed "#Mytag" and clicks the "mytag" chip, the existing token is removed.
+        /// </summary>
+        private void ToggleTagInSearchText(string tag)
+        {
+            if (string.IsNullOrEmpty(tag)) return;
+            var current = _searchText ?? "";
+            var rebuilt = new StringBuilder();
+            bool removed = false;
+            var sb = new StringBuilder();
+            bool inQuote = false;
+            void Flush()
+            {
+                if (sb.Length == 0) return;
+                var token = sb.ToString();
+                sb.Clear();
+                if (token.Length > 1 && token[0] == '#'
+                    && string.Equals(token.Substring(1), tag, StringComparison.OrdinalIgnoreCase))
+                {
+                    removed = true;
+                    return; // drop the token, swallow the leading separator below
+                }
+                if (rebuilt.Length > 0) rebuilt.Append(' ');
+                rebuilt.Append(token);
+            }
+            for (int i = 0; i < current.Length; i++)
+            {
+                var c = current[i];
+                if (c == '"') { sb.Append(c); inQuote = !inQuote; continue; }
+                if (!inQuote && char.IsWhiteSpace(c)) { Flush(); }
+                else sb.Append(c);
+            }
+            Flush();
+
+            if (!removed)
+            {
+                if (rebuilt.Length > 0) rebuilt.Append(' ');
+                rebuilt.Append('#').Append(tag);
+            }
+            // Setter handles Notify + chip-state recompute + debounced re-query.
+            SearchText = rebuilt.ToString();
         }
 
         public void RefreshStoredQueries()

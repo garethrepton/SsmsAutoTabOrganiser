@@ -206,6 +206,33 @@
             </Border>
         </DataTemplate>
 
+        <!-- Clickable variant for the recent-tag chip strip at the top of the unified list.
+             Active chips render at full opacity with a 2px accent ring; inactive chips dim
+             so the eye picks out which filters are applied at a glance. -->
+        <DataTemplate x:Key="TagFilterChipTemplate">
+            <Button Command="{Binding ToggleCommand}"
+                    Background="Transparent" BorderThickness="0" Padding="0"
+                    MinWidth="0" Margin="0,0,4,2"
+                    Cursor="Hand"
+                    ToolTip="Click to filter by this tag (click again to remove)">
+                <Border x:Name="ChipBorder"
+                        Background="{Binding Brush}" CornerRadius="8" Padding="7,2"
+                        BorderThickness="2" BorderBrush="Transparent"
+                        Opacity="0.55"
+                        SnapsToDevicePixels="True">
+                    <TextBlock Text="{Binding Text}" FontSize="10" FontWeight="SemiBold"
+                               Foreground="{Binding Foreground}" />
+                </Border>
+            </Button>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsActive}" Value="True">
+                    <Setter TargetName="ChipBorder" Property="Opacity" Value="1.0" />
+                    <Setter TargetName="ChipBorder" Property="BorderBrush"
+                            Value="{DynamicResource {x:Static vsui:EnvironmentColors.AccentMediumBrushKey}}" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+
         <!-- Shared two-line tab row: open-accent left border + bold title when open, status icons,
              title + subtitle, OPEN badge, tag chips, hover-only action. -->
         <DataTemplate x:Key="TabRowTemplate">
@@ -350,7 +377,7 @@
         Grid rows (top → bottom):
           0  toolbar (compact icon strip)
           1  inline info bar (visibility-driven)
-          2  scroll viewer containing RECENT / Stored Queries / Pinned / SEARCH
+          2  scroll viewer containing RECENT (blended search) / Stored Queries / Pinned
           3  grid splitter (drag to resize detail pane)
           4  detail pane
           5  save-to-scripts inline prompt (visibility-driven)
@@ -385,7 +412,7 @@
                 </Button>
                 <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
                         Background="Transparent" BorderThickness="0"
-                        ToolTip="Quick switcher (Ctrl+Alt+H,O — guaranteed; also Ctrl+Alt+O / Ctrl+Shift+T)"
+                        ToolTip="Quick switcher (Ctrl+Alt+T — preferred; Ctrl+Alt+H,O guaranteed; Ctrl+Alt+O / Ctrl+Shift+T also bound)"
                         Command="{Binding QuickSwitcherCommand}">
                     <imaging:CrispImage Width="16" Height="16"
                                         Moniker="{x:Static catalog:KnownMonikers.GoToNext}" />
@@ -461,21 +488,98 @@
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
 
+                <!-- Unified RECENT + SEARCH section. Empty search box shows the recent tabs
+                     verbatim; typing flips the list to filtered search results. The chip
+                     strip above the search box surfaces tags drawn from the last ~50 opens
+                     so the user can one-click filter by any of them. -->
                 <Expander IsExpanded="True">
                     <Expander.Header>
                         <TextBlock Text="RECENT" Style="{StaticResource SectionHeader}" />
                     </Expander.Header>
                     <Grid>
-                        <ListBox x:Name="RecentList" BorderThickness="0" MaxHeight="240"
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" MinHeight="160" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Tag chip strip. WrapPanel so chips flow onto multiple lines if
+                             there are many; hidden entirely when no recent tags exist. -->
+                        <ItemsControl Grid.Row="0" Margin="6,6,6,0"
+                                      ItemsSource="{Binding RecentTagChips}"
+                                      ItemTemplate="{StaticResource TagFilterChipTemplate}"
+                                      Visibility="{Binding HasRecentTagChips, Converter={StaticResource BoolToVis}}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+
+                        <!-- Search box + sort dropdown, promoted to the top of the section.
+                             Empty box ⇒ list shows Recent. Typing ⇒ list shows search results. -->
+                        <Grid Grid.Row="1" Margin="6,6,6,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0"
+                                    Background="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBackgroundBrushKey}}"
+                                    BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBorderBrushKey}}"
+                                    BorderThickness="1">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <imaging:CrispImage Grid.Column="0" Width="14" Height="14"
+                                                        Margin="6,0,4,0" Opacity="0.6"
+                                                        VerticalAlignment="Center"
+                                                        Moniker="{x:Static catalog:KnownMonikers.Search}" />
+                                    <TextBox Grid.Column="1"
+                                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                             BorderThickness="0" Background="Transparent"
+                                             KeyDown="OnSearchBox_KeyDown"
+                                             ToolTip="Empty = recent. Type to search: foo, name:foo, #tag, folder:x, desc:y, since:7d, -#archive (Esc to clear)" />
+                                    <Button Grid.Column="2"
+                                            Command="{Binding ClearSearchCommand}"
+                                            Visibility="{Binding ShowSearchClear, Converter={StaticResource BoolToVis}}"
+                                            Background="Transparent" BorderThickness="0"
+                                            Padding="4,0" MinWidth="0" ToolTip="Clear search">
+                                        <imaging:CrispImage Width="12" Height="12" Opacity="0.7"
+                                                            Moniker="{x:Static catalog:KnownMonikers.Cancel}" />
+                                    </Button>
+                                </Grid>
+                            </Border>
+
+                            <ComboBox Grid.Column="1" Margin="6,0,0,0" Width="140"
+                                      SelectedValue="{Binding SortMode, Mode=TwoWay}"
+                                      SelectedValuePath="Tag"
+                                      ToolTip="Sort order (applies when searching)">
+                                <ComboBoxItem Tag="recent"      Content="Most recent first" />
+                                <ComboBoxItem Tag="name-asc"    Content="Name (A-Z)" />
+                                <ComboBoxItem Tag="name-desc"   Content="Name (Z-A)" />
+                                <ComboBoxItem Tag="folder-name" Content="Folder, then name" />
+                            </ComboBox>
+                        </Grid>
+
+                        <!-- Single ListBox whose ItemsSource swaps based on SearchText state.
+                             Recent when empty, filtered Tabs when non-empty. -->
+                        <ListBox x:Name="RecentList" Grid.Row="2" MinHeight="160" MaxHeight="320"
+                                 BorderThickness="0"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                 ItemsSource="{Binding Recent}"
+                                 ItemsSource="{Binding DisplayedItems}"
                                  ItemTemplate="{StaticResource TabRowTemplate}"
                                  ItemContainerStyle="{StaticResource ItemContainerWithMenu}"
                                  MouseDoubleClick="OnList_MouseDoubleClick"
                                  SelectionChanged="OnList_SelectionChanged" />
-                        <TextBlock Style="{StaticResource MutedText}" Margin="10,8"
-                                   Text="No recent tabs yet — open a query."
-                                   Visibility="{Binding RecentEmptyVisible, Converter={StaticResource BoolToVis}}" />
+
+                        <TextBlock Grid.Row="3" Style="{StaticResource MutedText}" Margin="10,8"
+                                   Text="{Binding ListEmptyText}"
+                                   Visibility="{Binding ListEmptyVisible, Converter={StaticResource BoolToVis}}" />
                     </Grid>
                 </Expander>
 
@@ -622,79 +726,6 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
-
-                <Expander IsExpanded="True">
-                    <Expander.Header>
-                        <TextBlock Text="SEARCH" Style="{StaticResource SectionHeader}" />
-                    </Expander.Header>
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" MinHeight="160" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-
-                        <Grid Grid.Row="0" Margin="6,6,6,4">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-
-                            <Border Grid.Column="0"
-                                    Background="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBackgroundBrushKey}}"
-                                    BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBorderBrushKey}}"
-                                    BorderThickness="1">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <imaging:CrispImage Grid.Column="0" Width="14" Height="14"
-                                                        Margin="6,0,4,0" Opacity="0.6"
-                                                        VerticalAlignment="Center"
-                                                        Moniker="{x:Static catalog:KnownMonikers.Search}" />
-                                    <TextBox Grid.Column="1"
-                                             Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                                             BorderThickness="0" Background="Transparent"
-                                             KeyDown="OnSearchBox_KeyDown"
-                                             ToolTip="search: foo, name:foo, #tag, folder:x, desc:y, since:7d, -#archive (Esc to clear)" />
-                                    <Button Grid.Column="2"
-                                            Command="{Binding ClearSearchCommand}"
-                                            Visibility="{Binding ShowSearchClear, Converter={StaticResource BoolToVis}}"
-                                            Background="Transparent" BorderThickness="0"
-                                            Padding="4,0" MinWidth="0" ToolTip="Clear search">
-                                        <imaging:CrispImage Width="12" Height="12" Opacity="0.7"
-                                                            Moniker="{x:Static catalog:KnownMonikers.Cancel}" />
-                                    </Button>
-                                </Grid>
-                            </Border>
-
-                            <ComboBox Grid.Column="1" Margin="6,0,0,0" Width="140"
-                                      SelectedValue="{Binding SortMode, Mode=TwoWay}"
-                                      SelectedValuePath="Tag"
-                                      ToolTip="Sort order">
-                                <ComboBoxItem Tag="recent"      Content="Most recent first" />
-                                <ComboBoxItem Tag="name-asc"    Content="Name (A-Z)" />
-                                <ComboBoxItem Tag="name-desc"   Content="Name (Z-A)" />
-                                <ComboBoxItem Tag="folder-name" Content="Folder, then name" />
-                            </ComboBox>
-                        </Grid>
-
-                        <ListBox x:Name="TabsList" Grid.Row="1" MinHeight="160"
-                                 BorderThickness="0"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                 ItemsSource="{Binding Tabs}"
-                                 ItemTemplate="{StaticResource TabRowTemplate}"
-                                 ItemContainerStyle="{StaticResource ItemContainerWithMenu}"
-                                 MouseDoubleClick="OnList_MouseDoubleClick"
-                                 SelectionChanged="OnList_SelectionChanged" />
-
-                        <TextBlock Grid.Row="2" Style="{StaticResource MutedText}"
-                                   Margin="10,8" Text="No tabs match. Try clearing the search."
-                                   Visibility="{Binding TabsEmptyVisible, Converter={StaticResource BoolToVis}}" />
-                    </Grid>
-                </Expander>
 
             </StackPanel>
         </ScrollViewer>

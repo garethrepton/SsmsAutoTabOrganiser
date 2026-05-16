@@ -54,16 +54,21 @@
   <KeyBindings>
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId"
                 editor="guidVSStd97" key1="H" mod1="Control Alt" key2="S" />
-    <!-- Quick Switcher has THREE bindings registered.
+    <!-- Quick Switcher has FOUR bindings registered.
+           - Ctrl+Alt+T: preferred single chord. T for "Tab Organiser", and unclaimed by
+             SqlPrompt (which grabs Ctrl+T) — so this is the most ergonomic option for
+             users running SqlPrompt alongside SSMS.
            - Ctrl+Shift+T: original, kept for muscle-memory but SSMS binds this in the
              text-editor scope so it can be shadowed when focus is inside an editor.
            - Ctrl+Alt+O: single-chord convenience. SSMS doesn't bind it by default.
            - Ctrl+Alt+H, O: two-chord prefix (matches the Ctrl+Alt+H, S Snapshot Now
              pattern). Two-chord bindings are essentially never claimed by SSMS or any
              other extension, so this is the *guaranteed* way to invoke the switcher.
-         All three register in the global scope (guidVSStd97) so they fire from any
-         focus context — editor, tool window, shell, dialog — that doesn't claim them
-         with a more specific binding. -->
+         All register in the global scope (guidVSStd97) so they fire from any focus
+         context — editor, tool window, shell, dialog — that doesn't claim them with
+         a more specific binding. -->
+    <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
+                editor="guidVSStd97" key1="T" mod1="Control Alt" />
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
                 editor="guidVSStd97" key1="T" mod1="Control Shift" />
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
