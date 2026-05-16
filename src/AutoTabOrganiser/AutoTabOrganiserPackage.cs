@@ -49,6 +49,11 @@ namespace AutoTabOrganiser
         private Timer _pruneTimer;
         private EnvDTE.WindowEvents _windowEvents;
         private EnvDTE.DTEEvents _dteEvents;
+        // WPF-level keyboard hook used to *guarantee* Ctrl+T opens the Quick Switcher even
+        // when the chord overlaps an existing binding owned by another extension in the
+        // SSMS editor scope. Installed via InputManager.PreProcessInput which fires before
+        // WPF's command routing or the editor's IOleCommandTarget chain sees the keystroke.
+        private System.Windows.Input.PreProcessInputEventHandler _ctrlTPreProcessHook;
         // Set when DTE fires OnBeginShutdown. Read by DocumentTracker to skip the
         // close-snapshot cascade as SSMS tears down each open tab — those snapshots are
         // duplicates of the latest content and just slow down shutdown.
@@ -125,6 +130,22 @@ namespace AutoTabOrganiser
             }
             catch (Exception ex) { _log.Debug("WindowEvents subscribe failed: " + ex.Message); }
 
+            // Global Ctrl+T override. VSCT keybindings can only register at the command-
+            // routing layer, which means a more-specific scope (text editor) can shadow
+            // the global binding — if another extension has bound Ctrl+T inside SQL
+            // editors that binding will win at the command-routing level. To guarantee
+            // our chord always fires regardless of who else owns it, we install at
+            // InputManager.PreProcessInput which runs BEFORE command routing. Best-effort;
+            // if WPF isn't initialised yet the VSCT bindings (Ctrl+Shift+T,
+            // Ctrl+Alt+H,O, etc.) still provide fallbacks.
+            try
+            {
+                _ctrlTPreProcessHook = OnPreProcessInputForCtrlT;
+                System.Windows.Input.InputManager.Current.PreProcessInput += _ctrlTPreProcessHook;
+                _log.Info("Ctrl+T global override hook installed.");
+            }
+            catch (Exception ex) { _log.Debug("Ctrl+T global hook install failed: " + ex.Message); }
+
             ScheduleDailyPrune(appSettings);
 
             // Best-effort: clear out forgotten files in the open/ folder so it doesn't grow
@@ -177,6 +198,17 @@ namespace AutoTabOrganiser
                     try { if (_dteEvents != null) _dteEvents.OnBeginShutdown -= OnDteBeginShutdown; } catch { }
                     _windowEvents = null;
                     _dteEvents = null;
+
+                    // Detach the WPF Ctrl+T hook before package teardown. If left attached
+                    // when SSMS reloads the extension, the next instance would install a
+                    // second handler and Quick Switcher would fire twice per keystroke.
+                    try
+                    {
+                        if (_ctrlTPreProcessHook != null)
+                            System.Windows.Input.InputManager.Current.PreProcessInput -= _ctrlTPreProcessHook;
+                    }
+                    catch { }
+                    _ctrlTPreProcessHook = null;
 
                     _pruneTimer?.Dispose();
                     _docTracker?.Dispose();
@@ -301,6 +333,39 @@ namespace AutoTabOrganiser
                 _ = RefreshToolWindowAsync();
             }
             catch (Exception ex) { _log.Error("Tag config dialog failed", ex); }
+        }
+
+        /// <summary>
+        /// Fires for every WPF input event before command routing. We watch for the
+        /// PreviewKeyDown stage and match Ctrl+T (no Alt, no Shift). When matched we
+        /// mark the event handled, cancel further input processing, and dispatch the
+        /// Quick Switcher. This is the only reliable way to override a chord that
+        /// another extension has claimed in a more-specific scope — VSCT keybindings
+        /// alone cannot pre-empt the editor's IOleCommandTarget chain.
+        /// </summary>
+        private void OnPreProcessInputForCtrlT(object sender, System.Windows.Input.PreProcessInputEventArgs e)
+        {
+            try
+            {
+                var input = e?.StagingItem?.Input;
+                if (input == null) return;
+                if (!(input is System.Windows.Input.KeyEventArgs k)) return;
+                // PreviewKeyDown is the tunneling phase — we want to act before anything
+                // bubbles or the editor's command target sees it. The KeyDown bubbling
+                // phase fires for the same physical event afterwards; we don't need it
+                // because cancelling at PreProcess suppresses both phases.
+                if (k.RoutedEvent != System.Windows.Input.Keyboard.PreviewKeyDownEvent) return;
+                if (k.Key != System.Windows.Input.Key.T) return;
+                var mods = System.Windows.Input.Keyboard.Modifiers;
+                if ((mods & System.Windows.Input.ModifierKeys.Control) == 0) return;
+                if ((mods & System.Windows.Input.ModifierKeys.Alt)   != 0) return;
+                if ((mods & System.Windows.Input.ModifierKeys.Shift) != 0) return;
+
+                k.Handled = true;
+                e.Cancel();
+                OnQuickSwitcherInvoked(this, EventArgs.Empty);
+            }
+            catch (Exception ex) { _log?.Debug("Ctrl+T preprocess hook failed: " + ex.Message); }
         }
 
         private void OnQuickSwitcherInvoked(object sender, EventArgs e)

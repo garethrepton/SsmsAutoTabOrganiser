@@ -412,7 +412,7 @@
                 </Button>
                 <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
                         Background="Transparent" BorderThickness="0"
-                        ToolTip="Quick switcher (Ctrl+Alt+T — preferred; Ctrl+Alt+H,O guaranteed; Ctrl+Alt+O / Ctrl+Shift+T also bound)"
+                        ToolTip="Quick switcher (Ctrl+T — forced override even if the chord overlaps an existing binding; Ctrl+Alt+H,O fallback; Ctrl+Alt+O / Ctrl+Shift+T also bound)"
                         Command="{Binding QuickSwitcherCommand}">
                     <imaging:CrispImage Width="16" Height="16"
                                         Moniker="{x:Static catalog:KnownMonikers.GoToNext}" />

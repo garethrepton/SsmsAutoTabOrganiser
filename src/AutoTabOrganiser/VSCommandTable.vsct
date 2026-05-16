@@ -54,21 +54,23 @@
   <KeyBindings>
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId"
                 editor="guidVSStd97" key1="H" mod1="Control Alt" key2="S" />
-    <!-- Quick Switcher has FOUR bindings registered.
-           - Ctrl+Alt+T: preferred single chord. T for "Tab Organiser", and unclaimed by
-             SqlPrompt (which grabs Ctrl+T) — so this is the most ergonomic option for
-             users running SqlPrompt alongside SSMS.
-           - Ctrl+Shift+T: original, kept for muscle-memory but SSMS binds this in the
-             text-editor scope so it can be shadowed when focus is inside an editor.
-           - Ctrl+Alt+O: single-chord convenience. SSMS doesn't bind it by default.
-           - Ctrl+Alt+H, O: two-chord prefix (matches the Ctrl+Alt+H, S Snapshot Now
+    <!-- Quick Switcher bindings. The PRIMARY binding (Ctrl+T) is enforced at the WPF
+         InputManager.PreProcessInput layer in AutoTabOrganiserPackage.OnPreProcessInputForCtrlT
+         — that hook fires before VS command routing or the editor's IOleCommandTarget
+         chain, so it pre-empts any other extension that may already own the chord in
+         the text-editor scope (even if the chord overlaps an existing binding the WPF
+         hook wins). The VSCT entry below is for self-documentation only — it makes the
+         chord show up in Tools > Options > Environment > Keyboard.
+           - Ctrl+T: primary. Enforced via the WPF hook described above.
+           - Ctrl+Shift+T: alternate, may be shadowed in the text-editor scope.
+           - Ctrl+Alt+O: alternate single-chord. SSMS doesn't bind it by default.
+           - Ctrl+Alt+H, O: two-chord fallback (matches the Ctrl+Alt+H, S Snapshot Now
              pattern). Two-chord bindings are essentially never claimed by SSMS or any
-             other extension, so this is the *guaranteed* way to invoke the switcher.
-         All register in the global scope (guidVSStd97) so they fire from any focus
-         context — editor, tool window, shell, dialog — that doesn't claim them with
-         a more specific binding. -->
+             other extension, so this is the *guaranteed* command-routing fallback if
+             the WPF hook ever fails to install.
+         All register in the global scope (guidVSStd97). -->
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
-                editor="guidVSStd97" key1="T" mod1="Control Alt" />
+                editor="guidVSStd97" key1="T" mod1="Control" />
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
                 editor="guidVSStd97" key1="T" mod1="Control Shift" />
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
