@@ -38,6 +38,21 @@ namespace AutoTabOrganiser.Metadata
         /// </summary>
         public static string BuildInjectedText(string text, IEnumerable<string> tags, ParsedMetadata meta)
         {
+            var injection = ComputeInjection(text, tags, meta);
+            if (injection == null) return null;
+            return text.Substring(0, injection.InsertOffset)
+                 + injection.InsertedText
+                 + text.Substring(injection.InsertOffset);
+        }
+
+        /// <summary>
+        /// Computes WHERE to insert and WHAT to insert without producing the full new text. This
+        /// is the safer surface for editor-buffer callers — they get the exact substring to
+        /// pass to <c>ITextEdit.Insert</c> instead of having to recompute the diff from
+        /// <see cref="BuildInjectedText"/>'s output. Returns null when there is nothing to inject.
+        /// </summary>
+        public static TagInjection ComputeInjection(string text, IEnumerable<string> tags, ParsedMetadata meta)
+        {
             if (tags == null) return null;
             if (meta == null || meta.CommentBlockEndExclusive == 0) return null;
 
@@ -51,9 +66,18 @@ namespace AutoTabOrganiser.Metadata
 
             var line = "-- " + string.Join(" ", toAdd.Select(t => "#" + t));
             var nl = MetadataWriter.DetectLineEnding(text);
-            return text.Substring(0, meta.CommentBlockEndExclusive)
-                 + line + nl
-                 + text.Substring(meta.CommentBlockEndExclusive);
+            return new TagInjection
+            {
+                InsertOffset = meta.CommentBlockEndExclusive,
+                InsertedText = line + nl,
+            };
+        }
+
+        /// <summary>An insertion-only edit to apply at a specific offset in the buffer.</summary>
+        internal sealed class TagInjection
+        {
+            public int InsertOffset { get; set; }
+            public string InsertedText { get; set; }
         }
     }
 }

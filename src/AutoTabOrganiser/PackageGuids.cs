@@ -20,5 +20,6 @@ namespace AutoTabOrganiser
         public const int OpenSettingsCommandId          = 0x0104;
         public const int QuickSwitcherCommandId         = 0x0105;
         public const int TagConfigCommandId             = 0x0107;
+        public const int NewViewCommandId               = 0x0108;
     }
 }

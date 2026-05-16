@@ -154,6 +154,8 @@ namespace AutoTabOrganiser.Tracking
             ThreadHelper.ThrowIfNotOnUIThread();
             if (!IsLikelySqlDoc(docCookie, moniker)) return;
 
+            // Pre-check outside the lock so the SnapshotPipeline constructor (which touches
+            // DTE/the store) doesn't run unnecessarily on the hot path.
             lock (_pipelines)
             {
                 if (_pipelines.ContainsKey(docCookie)) return;
@@ -172,7 +174,26 @@ namespace AutoTabOrganiser.Tracking
                 tryInjectId: (id, mk, meta) => InjectIdAtBufferOnUiThread(docCookie, id, meta),
                 tryInjectAutoTags: tags => InjectAutoTagsAtBufferOnUiThread(docCookie, tags));
 
-            lock (_pipelines) _pipelines[docCookie] = pipeline;
+            // Re-check under the lock: between the pre-check and now, a concurrent caller may
+            // have inserted a pipeline for the same cookie. If so, dispose the one we just built
+            // and use the existing one to avoid leaking a SnapshotPipeline (it owns no unmanaged
+            // resources today, but it does hook into the store/settings, and pipelining a doc
+            // twice would double the snapshot writes).
+            bool inserted;
+            lock (_pipelines)
+            {
+                if (_pipelines.ContainsKey(docCookie))
+                {
+                    inserted = false;
+                }
+                else
+                {
+                    _pipelines[docCookie] = pipeline;
+                    inserted = true;
+                }
+            }
+            if (!inserted) { try { pipeline.Dispose(); } catch { } return; }
+
             _log.Info($"[doc opened] {SafeName(moniker)}  [{moniker}]");
 
             // Fire an immediate "first" snapshot so the side panel shows the tab right away
@@ -342,13 +363,17 @@ namespace AutoTabOrganiser.Tracking
                     if (buffer == null) return;
                     var text = buffer.CurrentSnapshot.GetText();
                     var fresh = MetadataParser.Parse(text);
-                    var newText = AutoTagger.BuildInjectedText(text, tags, fresh);
-                    if (newText == null) return;
+                    // ComputeInjection returns the exact (offset, text) pair we need for
+                    // ITextEdit.Insert. Previously we asked BuildInjectedText for the full new
+                    // document and substring'd out the diff — a fragile pattern that would
+                    // silently misbehave if BuildInjectedText were later changed to rewrite
+                    // bytes outside the inserted segment.
+                    var injection = AutoTagger.ComputeInjection(text, tags, fresh);
+                    if (injection == null) return;
+                    if (injection.InsertOffset < 0 || injection.InsertOffset > text.Length) return;
                     using (var edit = buffer.CreateEdit())
                     {
-                        var insertion = newText.Substring(fresh.CommentBlockEndExclusive,
-                            newText.Length - text.Length);
-                        edit.Insert(fresh.CommentBlockEndExclusive, insertion);
+                        edit.Insert(injection.InsertOffset, injection.InsertedText);
                         edit.Apply();
                     }
                     _log.Info($"[auto-tag injected] {string.Join(",", tags)} into {SafeName(info.Moniker)}");

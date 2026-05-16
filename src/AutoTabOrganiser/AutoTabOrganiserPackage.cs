@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.Design;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio;
@@ -11,6 +14,7 @@ using Microsoft.VisualStudio.Editor;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Text;
+using AutoTabOrganiser.Metadata;
 using AutoTabOrganiser.Settings;
 using AutoTabOrganiser.Storage;
 using AutoTabOrganiser.Tracking;
@@ -25,7 +29,11 @@ namespace AutoTabOrganiser
     [ProvideMenuResource("Menus.ctmenu", 1)]
     [ProvideAutoLoad(VSConstants.UICONTEXT.NoSolution_string, PackageAutoLoadFlags.BackgroundLoad)]
     [ProvideAutoLoad(VSConstants.UICONTEXT.SolutionExists_string, PackageAutoLoadFlags.BackgroundLoad)]
-    [ProvideToolWindow(typeof(TabOrganiserToolWindow), Style = VsDockStyle.Tabbed, Window = "3AE79031-E1BC-11D0-8F78-00A0C9110057")]
+    // MultiInstances = true permits opening additional copies of the tool window via the
+    // "New View" toolbar button. Each instance has its own id (0, 1, 2…) and gets its own
+    // ToolWindowControl + ViewModel, but they all share the same SnapshotStore / SettingsStore
+    // and stay live across SSMS restarts only at id=0 (id>0 are session-scoped).
+    [ProvideToolWindow(typeof(TabOrganiserToolWindow), MultiInstances = true, Style = VsDockStyle.Tabbed, Window = "3AE79031-E1BC-11D0-8F78-00A0C9110057")]
     [Guid(PackageGuids.AutoTabOrganiserPackageString)]
     public sealed class AutoTabOrganiserPackage : AsyncPackage
     {
@@ -97,6 +105,10 @@ namespace AutoTabOrganiser
             // Subscribe to SSMS window-activation so we can pin the user's currently-focused
             // SQL tab to the top of the RECENT section. DTE.Events references must be held
             // (not GC'd) for the events to keep firing.
+            //
+            // We capture the OnBeginShutdown handler in a named field so Dispose can unsubscribe
+            // it — an anonymous lambda has no identity for `-=` and would otherwise leak into a
+            // disposed package instance if SSMS reloads the extension.
             try
             {
                 var dte = (EnvDTE.DTE)await GetServiceAsync(typeof(EnvDTE.DTE));
@@ -108,12 +120,36 @@ namespace AutoTabOrganiser
                     // OnBeginShutdown fires before SSMS starts tearing down tabs, so by the time
                     // DocumentTracker sees OnBeforeLastDocumentUnlock for each doc the flag is set.
                     _dteEvents = dte.Events.DTEEvents;
-                    _dteEvents.OnBeginShutdown += () => IsShuttingDown = true;
+                    _dteEvents.OnBeginShutdown += OnDteBeginShutdown;
                 }
             }
             catch (Exception ex) { _log.Debug("WindowEvents subscribe failed: " + ex.Message); }
 
             ScheduleDailyPrune(appSettings);
+
+            // Best-effort: clear out forgotten files in the open/ folder so it doesn't grow
+            // unbounded. Runs in the background so init doesn't block on disk I/O.
+            _ = Task.Run(() => PruneStaleOpenFiles());
+
+            // Best-effort: scan the saved-scripts folder and import any .sql files that aren't
+            // already represented in the DB. Useful when:
+            //   - the user restores a backup of their saved-scripts folder onto a fresh install,
+            //   - they drop .sql files into the folder via Explorer/another tool,
+            //   - the DB was reset but the scripts on disk survived.
+            // Idempotent — files already represented by a saved-reason snapshot are skipped.
+            //
+            // Capture the currently-open document paths on the UI thread BEFORE handing off to
+            // a background task. The import path may inject `@id` into files lacking one via
+            // File.WriteAllText; if SSMS has the file open with unsaved edits, that overwrite
+            // would trigger a reload prompt and could lose those edits. Skipping the disk write
+            // for open files keeps the data-safety invariant intact.
+            var openDocPaths = TryEnumerateOpenDocumentPaths();
+            var settingsLoaded = _settings.Load();
+            _ = Task.Run(() =>
+            {
+                try { ImportSavedScriptsFolder(settingsLoaded, openDocPaths); }
+                catch (Exception ex) { _log?.Warn("Saved-scripts import failed: " + ex.Message); }
+            });
 
             // First-run consent: if not yet given, log a one-time notice. Full dialog is opt-in
             // via Tools menu; the deny-list still applies.
@@ -135,6 +171,13 @@ namespace AutoTabOrganiser
             {
                 try
                 {
+                    // Unsubscribe DTE event handlers BEFORE disposing dependents — otherwise a
+                    // late OnWindowActivated firing into a half-torn-down package would NRE.
+                    try { if (_windowEvents != null) _windowEvents.WindowActivated -= OnWindowActivated; } catch { }
+                    try { if (_dteEvents != null) _dteEvents.OnBeginShutdown -= OnDteBeginShutdown; } catch { }
+                    _windowEvents = null;
+                    _dteEvents = null;
+
                     _pruneTimer?.Dispose();
                     _docTracker?.Dispose();
                     _store?.Dispose();
@@ -165,6 +208,7 @@ namespace AutoTabOrganiser
                 Bind(mcs, PackageIds.OpenSettingsCommandId,           OnOpenSettingsInvoked);
                 Bind(mcs, PackageIds.QuickSwitcherCommandId,          OnQuickSwitcherInvoked);
                 Bind(mcs, PackageIds.TagConfigCommandId,              OnTagConfigInvoked);
+                Bind(mcs, PackageIds.NewViewCommandId,                OnNewViewInvoked);
             }
         }
 
@@ -181,9 +225,57 @@ namespace AutoTabOrganiser
             {
                 await JoinableTaskFactory.SwitchToMainThreadAsync();
                 var window = await ShowToolWindowAsync(typeof(TabOrganiserToolWindow), 0, true, DisposalToken);
+                ApplyInstanceCaption(window as TabOrganiserToolWindow, 0);
                 var control = (window as TabOrganiserToolWindow)?.Control;
                 if (control != null) WireToolWindow(control);
             });
+        }
+
+        /// <summary>
+        /// Open a NEW instance of the Tab Organiser tool window. Finds the lowest unused
+        /// instance id (id=0 is the primary, restored across restarts; id=1..N are session-
+        /// scoped). Each instance gets its own caption suffix so the user can tell them apart.
+        /// </summary>
+        private void OnNewViewInvoked(object sender, EventArgs e)
+        {
+            _ = JoinableTaskFactory.RunAsync(async () =>
+            {
+                await JoinableTaskFactory.SwitchToMainThreadAsync();
+                int id = FindNextFreeInstanceId();
+                var window = await ShowToolWindowAsync(typeof(TabOrganiserToolWindow), id, true, DisposalToken);
+                ApplyInstanceCaption(window as TabOrganiserToolWindow, id);
+                var control = (window as TabOrganiserToolWindow)?.Control;
+                if (control != null) WireToolWindow(control);
+                _log?.Info($"Opened Tab Organiser instance #{id}.");
+            });
+        }
+
+        /// <summary>
+        /// Returns the lowest non-negative integer for which no <see cref="TabOrganiserToolWindow"/>
+        /// frame currently exists. id=0 is the primary instance and is always probed first.
+        /// </summary>
+        private int FindNextFreeInstanceId()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            for (int i = 0; i < 64; i++)
+            {
+                // create:false ⇒ probe only; returns null if no instance is registered at this id.
+                if (FindToolWindow(typeof(TabOrganiserToolWindow), i, create: false) == null) return i;
+            }
+            // Safety net: 64 simultaneous instances is well past any reasonable use. Bail to a high
+            // number rather than spinning indefinitely.
+            return 64;
+        }
+
+        /// <summary>
+        /// Suffix the caption with the instance index so multiple windows are distinguishable in
+        /// the SSMS tab strip. id=0 stays as the unadorned title to keep the existing UX.
+        /// </summary>
+        private static void ApplyInstanceCaption(TabOrganiserToolWindow window, int id)
+        {
+            if (window == null) return;
+            try { window.Caption = id == 0 ? "Tab Organiser" : $"Tab Organiser #{id + 1}"; }
+            catch { }
         }
 
         private void OnSnapshotNowInvoked(object sender, EventArgs e)
@@ -302,6 +394,7 @@ namespace AutoTabOrganiser
                 onSnapshotNow:   () => OnSnapshotNowInvoked(this, EventArgs.Empty),
                 onQuickSwitcher: () => OnQuickSwitcherInvoked(this, EventArgs.Empty),
                 onTagConfig:     () => OnTagConfigInvoked(this, EventArgs.Empty),
+                onNewView:       () => OnNewViewInvoked(this, EventArgs.Empty),
                 log: _log,
                 settings: _settings,
                 viewMode: s.Ui.TabsViewMode,
@@ -330,6 +423,11 @@ namespace AutoTabOrganiser
                     }
                     await Task.Delay(250);
                 }
+                // Loud-failure path: if 20 × 250ms (~5s) wasn't enough for the store/control to
+                // appear, the tool window's commands will silently no-op. Log so we can diagnose
+                // it from the extension log rather than guessing why buttons don't respond.
+                _log?.Error($"WireToolWindowSafe gave up after 5s — store={(_store == null ? "null" : "ok")}, " +
+                            $"control={(window?.Control == null ? "null" : "ok")}. Tool window commands will not function.");
             });
         }
 
@@ -390,6 +488,22 @@ namespace AutoTabOrganiser
                 var safeName = SafeForFile(r.Name ?? "snapshot");
                 // Suffix the title with [tabId] so the SSMS tab caption shows the stable identity.
                 var tmp = Path.Combine(openDir, $"{safeName} [{r.TabId}].sql");
+
+                // Before writing, remove any other file in the open/ folder that maps to the
+                // same TabId. The tab's @name can change between opens — if it does, the old
+                // filename would otherwise persist as an orphan forever. We don't delete `tmp`
+                // itself; File.WriteAllText below will overwrite that one in place.
+                try
+                {
+                    foreach (var stale in Directory.EnumerateFiles(openDir, "*[" + r.TabId + "].sql"))
+                    {
+                        if (string.Equals(stale, tmp, StringComparison.OrdinalIgnoreCase)) continue;
+                        try { File.Delete(stale); }
+                        catch (Exception ex) { _log?.Debug($"open/ orphan cleanup skip {stale}: {ex.Message}"); }
+                    }
+                }
+                catch (Exception ex) { _log?.Debug("open/ orphan enumeration failed: " + ex.Message); }
+
                 File.WriteAllText(tmp, _store.ReadSnapshotContentById(r.Id));
 
                 var dte = (EnvDTE.DTE)await GetServiceAsync(typeof(EnvDTE.DTE));
@@ -398,14 +512,231 @@ namespace AutoTabOrganiser
             catch (Exception ex) { _log.Error("Open snapshot failed", ex); }
         }
 
+        /// <summary>
+        /// Walks the user's saved-scripts folder and imports any .sql file that isn't already
+        /// represented in the DB as a snapshot row with <c>reason='saved'</c> and a matching
+        /// <c>file_path</c>. For each new file we synthesise a snapshot row so the file shows up
+        /// in the Tab Organiser sidebar exactly as if the user had saved it from SSMS originally.
+        ///
+        /// Idempotency: the tab_id we assign is <c>meta.Id</c> when present in the file's header,
+        /// otherwise a deterministic GUID derived from the absolute path. So re-runs of this
+        /// scan don't create duplicates even if the file's @id is missing.
+        /// </summary>
+        /// <summary>
+        /// Snapshot of full paths currently open as SSMS documents. Returned on the UI thread
+        /// at startup before the saved-scripts import begins; the import then refuses to write
+        /// back to any of these paths, preventing a "file changed outside the editor" reload
+        /// prompt from clobbering unsaved edits.
+        /// </summary>
+        private HashSet<string> TryEnumerateOpenDocumentPaths()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var dte = (EnvDTE.DTE)GetService(typeof(EnvDTE.DTE));
+                var docs = dte?.Documents;
+                if (docs == null) return set;
+                foreach (EnvDTE.Document d in docs)
+                {
+                    try
+                    {
+                        var full = d?.FullName;
+                        if (!string.IsNullOrEmpty(full)) set.Add(Path.GetFullPath(full));
+                    }
+                    catch { }
+                }
+            }
+            catch (Exception ex) { _log?.Debug("Enumerate open documents failed: " + ex.Message); }
+            return set;
+        }
+
+        private void ImportSavedScriptsFolder(AppSettings settings, HashSet<string> openDocPaths)
+        {
+            var folder = settings?.SavedScripts?.FolderPath;
+            if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return;
+            openDocPaths = openDocPaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Build a set of paths already known to the DB so we don't re-import on every start.
+            // ListSnapshots with WHERE reason='saved' returns one row per save; we project to
+            // the (case-insensitive) full path set.
+            var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var saved = _store.ListSnapshots("reason=$r",
+                    new[] { new System.Collections.Generic.KeyValuePair<string, object>("$r", "saved") },
+                    int.MaxValue);
+                foreach (var s in saved)
+                    if (!string.IsNullOrEmpty(s.FilePath)) known.Add(Path.GetFullPath(s.FilePath));
+            }
+            catch (Exception ex) { _log?.Debug("ImportSavedScriptsFolder: ListSnapshots failed: " + ex.Message); }
+
+            int imported = 0;
+            int scanned  = 0;
+            foreach (var path in EnumerateSqlFilesSafe(folder))
+            {
+                scanned++;
+                try
+                {
+                    var full = Path.GetFullPath(path);
+                    if (known.Contains(full)) continue;
+
+                    string content;
+                    try { content = File.ReadAllText(full); }
+                    catch (Exception ex) { _log?.Debug($"ImportSavedScriptsFolder skip {full}: {ex.Message}"); continue; }
+
+                    var meta = MetadataParser.Parse(content);
+                    string tabId;
+                    if (!string.IsNullOrWhiteSpace(meta.Id))
+                    {
+                        tabId = meta.Id;
+                    }
+                    else
+                    {
+                        // No @id in the file. Generate a deterministic id from the path AND write
+                        // it into the file so a later SSMS open reuses the same id (instead of
+                        // SSMS's AutoIdInjector minting a fresh one and creating a duplicate
+                        // tabs_latest row). If the file write fails (read-only, locked, etc.),
+                        // import anyway with the deterministic id — duplication on a later open
+                        // is the worse failure, but losing the import is also bad.
+                        var deterministic = DeterministicGuidFromPath(full).ToString();
+                        tabId = deterministic;
+                        // Data safety: if SSMS already has the file open, do NOT rewrite it
+                        // here. The reload-prompt could discard the user's unsaved edits. The
+                        // import still proceeds with the deterministic id; if a later session
+                        // opens the file the AutoTagger can inject the id then.
+                        if (openDocPaths.Contains(full))
+                        {
+                            _log?.Debug($"ImportSavedScriptsFolder: @id write skipped (open in SSMS): {full}");
+                        }
+                        else
+                        {
+                            try
+                            {
+                                var withId = MetadataWriter.SetId(content, deterministic);
+                                if (!ReferenceEquals(withId, content) && withId != content)
+                                {
+                                    File.WriteAllText(full, withId);
+                                    content = withId;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                _log?.Debug($"ImportSavedScriptsFolder: @id write skipped for {full}: {ex.Message}");
+                            }
+                        }
+                    }
+
+                    // Capture mtime AFTER any @id injection so we use the disk-truth timestamp.
+                    var nowMs = ((DateTimeOffset)File.GetLastWriteTimeUtc(full)).ToUnixTimeMilliseconds();
+                    var name  = meta.Name ?? Path.GetFileNameWithoutExtension(full);
+
+                    var record = new SnapshotRecord
+                    {
+                        Id = Guid.NewGuid().ToString(),
+                        TabId = tabId,
+                        FilePath = full,
+                        Folder = meta.Folder,
+                        Name = name,
+                        ContentHash = Hashing.Sha256Hex(content),
+                        Reason = "saved",
+                        Ts = nowMs,
+                        Server = meta.Server,
+                        Database = meta.Database,
+                        Tags = meta.Tags ?? new System.Collections.Generic.List<string>(),
+                        Desc = meta.Description,
+                    };
+                    _store.WriteSnapshot(record, content);
+                    known.Add(full);
+                    imported++;
+                }
+                catch (Exception ex)
+                {
+                    _log?.Warn($"ImportSavedScriptsFolder error on {path}: {ex.Message}");
+                }
+            }
+
+            if (imported > 0)
+            {
+                _log?.Info($"Saved-scripts import: scanned={scanned}, imported={imported} (folder='{folder}').");
+                // Tell the sidebar (any open instance) to refresh so the imports are visible.
+                _ = RefreshToolWindowAsync();
+            }
+        }
+
+        private static System.Collections.Generic.IEnumerable<string> EnumerateSqlFilesSafe(string folder)
+        {
+            // Manual recursion so a single inaccessible subdirectory (perms, junction loop)
+            // doesn't abort the whole walk.
+            var stack = new System.Collections.Generic.Stack<string>();
+            stack.Push(folder);
+            while (stack.Count > 0)
+            {
+                var dir = stack.Pop();
+                System.Collections.Generic.IEnumerable<string> subs = Array.Empty<string>();
+                System.Collections.Generic.IEnumerable<string> files = Array.Empty<string>();
+                try { subs  = Directory.EnumerateDirectories(dir); } catch { }
+                try { files = Directory.EnumerateFiles(dir, "*.sql"); } catch { }
+                foreach (var f in files) yield return f;
+                foreach (var s in subs) stack.Push(s);
+            }
+        }
+
+        /// <summary>
+        /// Path → stable GUID. Same path always produces the same GUID, so re-running the
+        /// import scan never creates a duplicate tab_id row.
+        /// </summary>
+        private static Guid DeterministicGuidFromPath(string path)
+        {
+            using (var sha = SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(path ?? string.Empty));
+                var g = new byte[16];
+                Array.Copy(bytes, g, 16);
+                return new Guid(g);
+            }
+        }
+
+        /// <summary>
+        /// On startup, delete files in <c>open/</c> older than <paramref name="maxAgeDays"/>.
+        /// Files still locked by SSMS (because they're currently open in a tab) throw
+        /// <see cref="IOException"/> on <see cref="File.Delete"/>; we swallow those — the file
+        /// is by definition still in use and will be cleaned next session if no longer needed.
+        /// </summary>
+        private void PruneStaleOpenFiles(int maxAgeDays = 30)
+        {
+            try
+            {
+                var openDir = Path.Combine(_store.Root, "open");
+                if (!Directory.Exists(openDir)) return;
+                var threshold = DateTime.UtcNow.AddDays(-maxAgeDays);
+                int deleted = 0;
+                foreach (var f in Directory.EnumerateFiles(openDir, "*.sql"))
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTimeUtc(f) >= threshold) continue;
+                        File.Delete(f);
+                        deleted++;
+                    }
+                    catch (Exception ex) { _log?.Debug($"open/ prune skip {f}: {ex.Message}"); }
+                }
+                if (deleted > 0) _log?.Info($"open/ prune: deleted {deleted} stale file(s) older than {maxAgeDays}d.");
+            }
+            catch (Exception ex) { _log?.Debug("PruneStaleOpenFiles failed: " + ex.Message); }
+        }
+
+        private void OnDteBeginShutdown() => IsShuttingDown = true;
+
         private void OnWindowActivated(EnvDTE.Window gotFocus, EnvDTE.Window lostFocus)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             try
             {
                 var tabId = _docTracker?.GetActiveTabId();
-                var window = FindToolWindow(typeof(TabOrganiserToolWindow), 0, false) as TabOrganiserToolWindow;
-                window?.Control?.SetActiveTabId(tabId);
+                // Multi-instance: every open tool window needs its active-tab pin updated,
+                // not just the primary (id=0) one.
+                ForEachToolWindow(w => w?.Control?.SetActiveTabId(tabId));
             }
             catch (Exception ex) { _log?.Debug("WindowActivated handler failed: " + ex.Message); }
         }
@@ -415,9 +746,27 @@ namespace AutoTabOrganiser
             return JoinableTaskFactory.RunAsync(async () =>
             {
                 await JoinableTaskFactory.SwitchToMainThreadAsync();
-                var window = FindToolWindow(typeof(TabOrganiserToolWindow), 0, false) as TabOrganiserToolWindow;
-                window?.Control?.RefreshTabs();
+                ForEachToolWindow(w => w?.Control?.RefreshTabs());
             }).Task;
+        }
+
+        /// <summary>
+        /// Invokes <paramref name="action"/> for every currently-live <see cref="TabOrganiserToolWindow"/>
+        /// instance, primary (id=0) and any session-scoped secondaries opened via "New View".
+        /// Must be called on the UI thread.
+        /// </summary>
+        private void ForEachToolWindow(Action<TabOrganiserToolWindow> action)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            // The id space is sparse but small; probe a fixed range. FindToolWindow with
+            // create:false returns null when the id is unused, so we just skip those.
+            for (int i = 0; i < 64; i++)
+            {
+                TabOrganiserToolWindow w = null;
+                try { w = FindToolWindow(typeof(TabOrganiserToolWindow), i, create: false) as TabOrganiserToolWindow; }
+                catch { /* unregistered id — skip */ }
+                if (w != null) action(w);
+            }
         }
 
         private void ScheduleDailyPrune(AppSettings appSettings)

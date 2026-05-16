@@ -43,6 +43,10 @@
         <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
         <Strings><ButtonText>Tab Organiser: Tag Config…</ButtonText></Strings>
       </Button>
+      <Button guid="guidAutoTabOrganiserCmdSet" id="NewViewCommandId" priority="0x0180" type="Button">
+        <Parent guid="guidAutoTabOrganiserCmdSet" id="TabHistoryToolsGroup" />
+        <Strings><ButtonText>Tab Organiser: New View</ButtonText></Strings>
+      </Button>
     </Buttons>
 
   </Commands>
@@ -50,11 +54,22 @@
   <KeyBindings>
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId"
                 editor="guidVSStd97" key1="H" mod1="Control Alt" key2="S" />
-    <!-- Ctrl+Shift+T opens the quick switcher. Ctrl+T (Results to Text) and Ctrl+P
-         (Print, in some contexts) are both bound by SSMS; Ctrl+Shift+T isn't, so it
-         doesn't fight a built-in command. -->
+    <!-- Quick Switcher has THREE bindings registered.
+           - Ctrl+Shift+T: original, kept for muscle-memory but SSMS binds this in the
+             text-editor scope so it can be shadowed when focus is inside an editor.
+           - Ctrl+Alt+O: single-chord convenience. SSMS doesn't bind it by default.
+           - Ctrl+Alt+H, O: two-chord prefix (matches the Ctrl+Alt+H, S Snapshot Now
+             pattern). Two-chord bindings are essentially never claimed by SSMS or any
+             other extension, so this is the *guaranteed* way to invoke the switcher.
+         All three register in the global scope (guidVSStd97) so they fire from any
+         focus context — editor, tool window, shell, dialog — that doesn't claim them
+         with a more specific binding. -->
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
                 editor="guidVSStd97" key1="T" mod1="Control Shift" />
+    <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
+                editor="guidVSStd97" key1="O" mod1="Control Alt" />
+    <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
+                editor="guidVSStd97" key1="H" mod1="Control Alt" key2="O" />
   </KeyBindings>
 
   <Symbols>
@@ -70,6 +85,7 @@
       <IDSymbol name="OpenSettingsCommandId"      value="0x0104" />
       <IDSymbol name="QuickSwitcherCommandId"     value="0x0105" />
       <IDSymbol name="TagConfigCommandId"         value="0x0107" />
+      <IDSymbol name="NewViewCommandId"           value="0x0108" />
     </GuidSymbol>
   </Symbols>
 

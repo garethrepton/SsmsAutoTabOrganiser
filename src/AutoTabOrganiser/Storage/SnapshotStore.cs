@@ -66,6 +66,12 @@ namespace AutoTabOrganiser.Storage
             _conn = new SqliteConnection(cs);
             _conn.Open();
 
+            // Belt-and-braces: before any migration touches the DB, snapshot it to disk
+            // whenever the running assembly version differs from what was last recorded.
+            // Schema.sql today is purely additive, but a future destructive migration would
+            // otherwise have no rollback path. Backup-on-version-change is the invariant.
+            BackupBeforeMigrationIfVersionChanged();
+
             var schema = LoadEmbeddedSchema();
             using (var cmd = _conn.CreateCommand())
             {
@@ -85,7 +91,209 @@ namespace AutoTabOrganiser.Storage
             EnsureColumn("tabs_latest", "database", "TEXT");
             BackfillTabsLatestConnection();
 
+            // access_count powers frecency in the Quick Switcher — hot tabs surface above merely
+            // recent ones. Defaults to 0 on legacy rows; WriteSnapshot increments it per snapshot.
+            EnsureColumn("tabs_latest", "access_count", "INTEGER NOT NULL DEFAULT 0");
+
+            EnsureIndexes();
+
             EnsureFtsTable();
+
+            // Migration completed cleanly — record the current assembly version so the next
+            // run can detect future upgrades.
+            RecordCurrentAssemblyVersion();
+        }
+
+        private const int BackupKeepCount = 5;
+        private const string AssemblyVersionKey = "assembly_version";
+
+        private static string CurrentAssemblyVersion()
+        {
+            try { return typeof(SnapshotStore).Assembly.GetName().Version?.ToString() ?? "unknown"; }
+            catch { return "unknown"; }
+        }
+
+        /// <summary>
+        /// If the assembly version recorded in <c>app_meta</c> differs from the running
+        /// assembly's version (or no version is recorded but user data already exists),
+        /// produce a consistent copy of <c>index.db</c> in <c>{root}\backups\</c> using
+        /// SQLite's <c>VACUUM INTO</c>. Then prune the backups directory to the most
+        /// recent <see cref="BackupKeepCount"/> files. Best-effort: any failure is
+        /// logged but does not abort startup — losing a snapshot of the backup is far
+        /// less bad than refusing to load the extension.
+        /// </summary>
+        private void BackupBeforeMigrationIfVersionChanged()
+        {
+            try
+            {
+                // app_meta is the version registry. CREATE IF NOT EXISTS keeps this idempotent.
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText =
+                        "CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT);";
+                    cmd.ExecuteNonQuery();
+                }
+
+                bool hasPriorData = TableHasRows("snapshots");
+                string recorded = ReadAppMeta(AssemblyVersionKey);
+                string current = CurrentAssemblyVersion();
+
+                // Three cases:
+                //   recorded == current        → no upgrade, no backup needed
+                //   recorded == null && !data  → fresh install, no backup needed
+                //   otherwise                  → upgrade (or pre-app_meta legacy data) → back up
+                if (string.Equals(recorded, current, StringComparison.Ordinal)) return;
+                if (recorded == null && !hasPriorData) return;
+
+                var backupsDir = Path.Combine(_root, "backups");
+                Directory.CreateDirectory(backupsDir);
+
+                var oldLabel = string.IsNullOrEmpty(recorded) ? "pre-meta" : recorded;
+                var ts = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+                var safeOld = SanitiseForFile(oldLabel);
+                var safeNew = SanitiseForFile(current);
+                var backupPath = Path.Combine(backupsDir, $"index.{safeOld}-to-{safeNew}.{ts}.db");
+
+                // VACUUM INTO produces a consistent snapshot via SQLite itself — safe even
+                // with WAL journal mode and concurrent connections. The destination must be
+                // quoted with single quotes inside the SQL string.
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "VACUUM INTO '" + backupPath.Replace("'", "''") + "';";
+                    cmd.ExecuteNonQuery();
+                }
+                _log?.Info($"Pre-migration backup written: {backupPath} (from version '{oldLabel}' to '{current}').");
+
+                PruneOldBackups(backupsDir);
+            }
+            catch (Exception ex)
+            {
+                _log?.Warn("Pre-migration DB backup failed (continuing without backup): " + ex.Message);
+            }
+        }
+
+        private void RecordCurrentAssemblyVersion()
+        {
+            try
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText =
+                        "INSERT INTO app_meta(key, value) VALUES($k, $v) " +
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value;";
+                    Add(cmd, "$k", AssemblyVersionKey);
+                    Add(cmd, "$v", CurrentAssemblyVersion());
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex) { _log?.Warn("Record assembly version failed: " + ex.Message); }
+        }
+
+        private bool TableHasRows(string tableName)
+        {
+            // SQLite parameter binding can't substitute a table identifier, so the name has to
+            // be interpolated. Restrict to a conservative identifier shape so an unsanitised
+            // future caller can't smuggle in arbitrary SQL via this path.
+            if (string.IsNullOrEmpty(tableName) ||
+                !System.Text.RegularExpressions.Regex.IsMatch(tableName, "^[A-Za-z_][A-Za-z0-9_]*$"))
+                return false;
+
+            try
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText =
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=$n LIMIT 1;";
+                    Add(cmd, "$n", tableName);
+                    if (cmd.ExecuteScalar() == null) return false;
+                }
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = $"SELECT 1 FROM {tableName} LIMIT 1;";
+                    return cmd.ExecuteScalar() != null;
+                }
+            }
+            catch { return false; }
+        }
+
+        private string ReadAppMeta(string key)
+        {
+            using (var cmd = _conn.CreateCommand())
+            {
+                cmd.CommandText = "SELECT value FROM app_meta WHERE key=$k;";
+                Add(cmd, "$k", key);
+                return cmd.ExecuteScalar() as string;
+            }
+        }
+
+        private static string SanitiseForFile(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "unknown";
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new StringBuilder(s.Length);
+            foreach (var c in s) sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
+            return sb.ToString();
+        }
+
+        private void PruneOldBackups(string backupsDir)
+        {
+            try
+            {
+                var files = Directory.GetFiles(backupsDir, "index.*.db");
+                if (files.Length <= BackupKeepCount) return;
+                Array.Sort(files, (a, b) => File.GetLastWriteTimeUtc(b).CompareTo(File.GetLastWriteTimeUtc(a)));
+                for (int i = BackupKeepCount; i < files.Length; i++)
+                {
+                    try { File.Delete(files[i]); }
+                    catch (Exception ex) { _log?.Debug($"Prune backup '{files[i]}' failed: {ex.Message}"); }
+                }
+            }
+            catch (Exception ex) { _log?.Debug("Prune backups failed: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Composite indexes for hot-path queries. All are <c>IF NOT EXISTS</c> so re-running
+        /// is a cheap no-op. Each was introduced for a specific query in this codebase — see
+        /// the inline comments for which query benefits.
+        /// </summary>
+        private void EnsureIndexes()
+        {
+            try
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    // (tab_id, reason, ts DESC) — speeds the scalar subquery in ListTabs that
+                    // computes last_saved_ts per tab. Without it SQLite seeks by tab_id then
+                    // scans for reason='saved' across every row for the tab.
+                    cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_snapshots_tab_reason_ts " +
+                                      "ON snapshots(tab_id, reason, ts DESC);";
+                    cmd.ExecuteNonQuery();
+                }
+                using (var cmd = _conn.CreateCommand())
+                {
+                    // (tag, snapshot_id) — speeds the EXISTS clause for #tag filters in the
+                    // sidebar/Quick Switcher search. The existing single-column ix_snapshot_tags_tag
+                    // helps locate tag rows but still requires a follow-up snapshot_id lookup.
+                    cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_snapshot_tags_tag_snapshot " +
+                                      "ON snapshot_tags(tag, snapshot_id);";
+                    cmd.ExecuteNonQuery();
+                }
+                using (var cmd = _conn.CreateCommand())
+                {
+                    // (server, ts DESC) and (database, ts DESC) — speed server:/database: filters
+                    // in the Quick Switcher when narrowing to a specific connection.
+                    cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_tabs_latest_server_ts " +
+                                      "ON tabs_latest(server, ts DESC);";
+                    cmd.ExecuteNonQuery();
+                }
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "CREATE INDEX IF NOT EXISTS ix_tabs_latest_database_ts " +
+                                      "ON tabs_latest(database, ts DESC);";
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex) { _log?.Warn("EnsureIndexes failed: " + ex.Message); }
         }
 
         /// <summary>
@@ -186,15 +394,18 @@ namespace AutoTabOrganiser.Storage
             if (r == null) throw new ArgumentNullException(nameof(r));
             if (content == null) content = string.Empty;
 
-            // Dual storage: content lives in the DB (fast reads, FTS) AND in a per-snapshot
-            // .sql file on disk (browsable backup, external tooling). Disk write happens before
-            // the DB row is inserted so a crash mid-write leaves an orphan file rather than a DB
-            // row pointing at nothing — backfill on next start can re-derive the same path.
-            r.DiskPath = WriteContentToDisk(r, content);
             r.ContentSize = Encoding.UTF8.GetByteCount(content);
 
+            // Dual storage: content lives in the DB (fast reads, FTS) AND in a per-snapshot
+            // .sql file on disk (browsable backup, external tooling). Both the disk write and
+            // the DB insert happen inside the _gate lock so concurrent writers can't race on
+            // the deterministic file path or call into a Dispose'd _conn. Disk write still
+            // happens before the DB insert so a crash mid-transaction leaves an orphan file
+            // rather than a DB row pointing at nothing — BackfillDiskSnapshots heals orphans.
             lock (_gate)
             {
+                r.DiskPath = WriteContentToDisk(r, content);
+
                 using (var tx = _conn.BeginTransaction())
                 {
                     using (var cmd = _conn.CreateCommand())
@@ -240,9 +451,12 @@ namespace AutoTabOrganiser.Storage
                     using (var cmd = _conn.CreateCommand())
                     {
                         cmd.Transaction = tx;
+                        // access_count: starts at 1 on first snapshot for a tab; on update, bump
+                        // the existing count by 1. This is the frecency signal the Quick Switcher
+                        // sorts by — hot tabs surface above merely-recent ones.
                         cmd.CommandText =
-                            "INSERT INTO tabs_latest(tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database) " +
-                            "VALUES($tab,$sid,$fld,$nm,$tg,$ts,1,0,$dsc,$sv,$db) " +
+                            "INSERT INTO tabs_latest(tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database, access_count) " +
+                            "VALUES($tab,$sid,$fld,$nm,$tg,$ts,1,0,$dsc,$sv,$db,1) " +
                             "ON CONFLICT(tab_id) DO UPDATE SET " +
                             "  latest_snapshot_id=excluded.latest_snapshot_id, " +
                             "  folder=excluded.folder, " +
@@ -253,7 +467,8 @@ namespace AutoTabOrganiser.Storage
                             "  is_dirty=0, " +
                             "  desc=excluded.desc, " +
                             "  server=excluded.server, " +
-                            "  database=excluded.database;";
+                            "  database=excluded.database, " +
+                            "  access_count=tabs_latest.access_count + 1;";
                         Add(cmd, "$tab", r.TabId);
                         Add(cmd, "$sid", r.Id);
                         Add(cmd, "$fld", r.Folder);
@@ -268,14 +483,23 @@ namespace AutoTabOrganiser.Storage
 
                     // Refresh the FTS row for this tab. We index only the latest content per tab
                     // (not every historical snapshot) to keep the index bounded.
+                    //
+                    // Two separate ExecuteNonQuery calls: Microsoft.Data.Sqlite only executes the
+                    // first statement when multiple are concatenated into one CommandText, which
+                    // would silently drop the INSERT and empty the FTS index over time.
                     if (_ftsAvailable)
                     {
                         using (var cmd = _conn.CreateCommand())
                         {
                             cmd.Transaction = tx;
-                            cmd.CommandText =
-                                "DELETE FROM tab_content_fts WHERE tab_id = $tab; " +
-                                "INSERT INTO tab_content_fts(tab_id, content) VALUES($tab, $content);";
+                            cmd.CommandText = "DELETE FROM tab_content_fts WHERE tab_id = $tab;";
+                            Add(cmd, "$tab", r.TabId);
+                            cmd.ExecuteNonQuery();
+                        }
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "INSERT INTO tab_content_fts(tab_id, content) VALUES($tab, $content);";
                             Add(cmd, "$tab", r.TabId);
                             Add(cmd, "$content", content ?? string.Empty);
                             cmd.ExecuteNonQuery();
@@ -351,7 +575,14 @@ namespace AutoTabOrganiser.Storage
                     // the search-query parser's unqualified WHERE clauses don't break.
                     cmd.CommandText =
                         "SELECT tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database, " +
-                        "       (SELECT MAX(s.ts) FROM snapshots s WHERE s.tab_id = tabs_latest.tab_id AND s.reason = 'saved') AS last_saved_ts " +
+                        "       (SELECT MAX(s.ts) FROM snapshots s WHERE s.tab_id = tabs_latest.tab_id AND s.reason = 'saved') AS last_saved_ts, " +
+                        "       access_count, " +
+                        // Denormalised file-path lookups — saved-reason first (the user's
+                        // explicit Save), then the latest snapshot's path as a fallback. These
+                        // hop off the (tab_id, reason, ts DESC) and (tab_id, ts DESC) indexes
+                        // respectively, so they're cheap per row even at 200+ tabs.
+                        "       (SELECT s.file_path FROM snapshots s WHERE s.tab_id = tabs_latest.tab_id AND s.reason = 'saved' AND s.file_path IS NOT NULL ORDER BY s.ts DESC LIMIT 1) AS saved_file_path, " +
+                        "       (SELECT s.file_path FROM snapshots s WHERE s.tab_id = tabs_latest.tab_id ORDER BY s.ts DESC LIMIT 1) AS latest_file_path " +
                         "FROM tabs_latest " +
                         (string.IsNullOrEmpty(sqlWhere) ? "" : "WHERE " + sqlWhere + " ") +
                         "ORDER BY " + (string.IsNullOrEmpty(orderBy) ? "ts DESC" : orderBy) + ";";
@@ -377,6 +608,9 @@ namespace AutoTabOrganiser.Storage
                                 Server = rd.IsDBNull(9) ? null : rd.GetString(9),
                                 Database = rd.IsDBNull(10) ? null : rd.GetString(10),
                                 LastSavedTs = rd.IsDBNull(11) ? (long?)null : rd.GetInt64(11),
+                                AccessCount = rd.IsDBNull(12) ? 0 : rd.GetInt64(12),
+                                SavedFilePath = rd.IsDBNull(13) ? null : rd.GetString(13),
+                                LatestFilePath = rd.IsDBNull(14) ? null : rd.GetString(14),
                             });
                         }
                     }
@@ -775,6 +1009,24 @@ CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCAS
         }
 
         /// <summary>
+        /// Total bytes-of-content across all snapshots. Used by <see cref="Pruner"/> to decide
+        /// whether the quota pass needs to do any work — much cheaper than fetching every row.
+        /// </summary>
+        public long SumSnapshotContentSize()
+        {
+            lock (_gate)
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT COALESCE(SUM(content_size), 0) FROM snapshots;";
+                    var v = cmd.ExecuteScalar();
+                    if (v == null || v is DBNull) return 0;
+                    return Convert.ToInt64(v);
+                }
+            }
+        }
+
+        /// <summary>
         /// Cross-tab snapshot deduplication. Groups snapshots by <c>content_hash</c>; when a
         /// hash appears under two or more distinct <c>tab_id</c>s, picks one snapshot to keep
         /// (winner) and deletes the rest of the group's losers.
@@ -809,10 +1061,22 @@ CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCAS
                         while (rd.Read()) if (!rd.IsDBNull(0)) referenced.Add(rd.GetString(0));
                 }
 
+                // Push the candidate-finding work into SQL: only return snapshots whose
+                // content_hash appears in *at least two distinct tabs*. With 5k+ rows, this
+                // avoids streaming the entire snapshots table into managed memory just to
+                // find that 95% of hashes are singletons. The inner GROUP BY is served by the
+                // ix_snapshots_tab_ts index (covering on content_hash is unnecessary because
+                // SQLite's planner will still pick this when content_hash has high cardinality).
                 var rows = new List<DedupRow>();
                 using (var cmd = _conn.CreateCommand())
                 {
-                    cmd.CommandText = "SELECT id, tab_id, content_hash, ts, reason, disk_path FROM snapshots;";
+                    cmd.CommandText =
+                        "SELECT id, tab_id, content_hash, ts, reason, disk_path " +
+                        "FROM snapshots " +
+                        "WHERE content_hash IN (" +
+                        "  SELECT content_hash FROM snapshots " +
+                        "  GROUP BY content_hash HAVING COUNT(DISTINCT tab_id) >= 2" +
+                        ");";
                     using (var rd = cmd.ExecuteReader())
                     {
                         while (rd.Read())

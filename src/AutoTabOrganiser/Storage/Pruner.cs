@@ -77,10 +77,13 @@ namespace AutoTabOrganiser.Storage
             int quotaDeleted = 0;
             if (_quotaBytes > 0)
             {
-                var remaining = _store.ListAllSnapshotsForPruner();
-                long total = remaining.Sum(s => s.ContentSize);
+                // Fast path: ask the DB for the total size in one query. Only if it actually
+                // exceeds the quota do we list candidate snapshots — avoids materialising every
+                // row into managed memory just to compute a SUM when the user is under quota.
+                long total = _store.SumSnapshotContentSize();
                 if (total > _quotaBytes)
                 {
+                    var remaining = _store.ListAllSnapshotsForPruner();
                     foreach (var s in remaining
                                  .OrderBy(s => s.Ts)
                                  .Where(s => s.Reason != "saved" && s.Reason != "closed"

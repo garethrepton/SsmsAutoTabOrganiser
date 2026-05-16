@@ -80,7 +80,9 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
         {
             var s = Selected;
             if (s == null) return;
-            _ = _openTabAtText?.Invoke(s.Source?.TabId, ExtractFindText(_searchText));
+            var tabId = s.Source?.TabId;
+            if (string.IsNullOrEmpty(tabId)) return; // defensive: bogus row, nothing to open
+            _ = _openTabAtText?.Invoke(tabId, ExtractFindText(_searchText));
         }
 
         /// <summary>
@@ -146,8 +148,10 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                             query, nowMs,
                             includeContentInDefault: true,
                             ftsAvailable: _store.FtsAvailable);
-                        // Open tabs first, then most-recent first.
-                        return _store.ListTabs(where, pars, "is_open DESC, ts DESC");
+                        // Frecency ordering: currently-open tabs first; then by access_count
+                        // (how often the user has touched this tab); then by recency. A tab the
+                        // user opens daily ranks above a tab they touched once last week.
+                        return _store.ListTabs(where, pars, "is_open DESC, access_count DESC, ts DESC");
                     }, ct).ConfigureAwait(true);
 
                     if (ct.IsCancellationRequested) return;

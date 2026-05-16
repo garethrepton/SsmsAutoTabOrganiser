@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,6 +18,12 @@ namespace AutoTabOrganiser.Tracking
     /// </summary>
     internal sealed class SnapshotPipeline : IDisposable
     {
+        // Process-wide monotonic millisecond clock. Used for debounce/flush comparisons against
+        // long fields below — Environment.TickCount is int and wraps after ~25 days, which would
+        // make the long-typed comparisons go haywire; Stopwatch.ElapsedMilliseconds returns long
+        // and never wraps within practical lifetimes.
+        private static readonly Stopwatch s_clock = Stopwatch.StartNew();
+
         private readonly string _moniker;
         private readonly Func<string> _getWindowTitle;
         private readonly SnapshotStore _store;
@@ -78,7 +85,7 @@ namespace AutoTabOrganiser.Tracking
             if (IsServerDenied(server, settings)) return;
 
             var hash = Hashing.Sha256Hex(text);
-            var nowMs = Environment.TickCount;
+            var nowMs = s_clock.ElapsedMilliseconds;
 
             // saved/closed/first: bypass dedup and debounce. "first" is fired by the tracker as
             // soon as a tab attaches, so a brand-new tab lands in the side panel immediately
@@ -165,7 +172,7 @@ namespace AutoTabOrganiser.Tracking
 
                 var written = _store.WriteSnapshot(record, text);
                 _lastSnapshotHash = contentHash;
-                _lastSnapshotTickMs = Environment.TickCount;
+                _lastSnapshotTickMs = s_clock.ElapsedMilliseconds;
                 _pendingHash = null;
 
                 _log.Info($"[snap {reason}] {nameFallback}  tags={record.Tags.Count}  -> {written}");

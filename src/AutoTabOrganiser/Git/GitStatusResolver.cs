@@ -85,8 +85,22 @@ namespace AutoTabOrganiser.Git
                 using (var p = Process.Start(psi))
                 {
                     if (p == null) return map;
+                    // Drain stderr concurrently with stdout. Both pipes are redirected, and git
+                    // can produce non-trivial stderr (warnings, "hint:" lines) on large repos.
+                    // If we only read stdout, a full stderr pipe buffer blocks git, which then
+                    // can't drain stdout, deadlocking both reads. ReadToEndAsync + Task.Run on
+                    // stderr is cheap and prevents that.
+                    var stderrTask = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { return p.StandardError.ReadToEnd(); }
+                        catch { return string.Empty; }
+                    });
                     var stdout = p.StandardOutput.ReadToEnd();
-                    p.WaitForExit(2000);
+                    if (!p.WaitForExit(2000))
+                    {
+                        try { p.Kill(); } catch { }
+                    }
+                    try { stderrTask.Wait(500); } catch { }
                     foreach (var raw in stdout.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
                     {
                         var line = raw.TrimEnd('\r');

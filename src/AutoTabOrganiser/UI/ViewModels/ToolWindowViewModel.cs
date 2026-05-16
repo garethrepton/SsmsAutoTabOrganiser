@@ -26,9 +26,34 @@ namespace AutoTabOrganiser.UI.ViewModels
     /// and <see cref="GitStatusResolver"/>; the view contributes only thin glue (modal dialogs
     /// for tag picker / commit message prompt, plus focus management on the inline save panel).
     /// </summary>
-    internal sealed class ToolWindowViewModel : INotifyPropertyChanged
+    internal sealed class ToolWindowViewModel : INotifyPropertyChanged, IDisposable
     {
         public event PropertyChangedEventHandler PropertyChanged;
+        private bool _disposed;
+
+        /// <summary>
+        /// Release the FileSystemWatcher and DispatcherTimer resources this VM owns. Safe to
+        /// call multiple times. Important for multi-instance tool windows: when a secondary
+        /// instance is closed, its VM is abandoned and would otherwise leak OS file-watch
+        /// handles and keep firing Dispatcher work into a dead UI.
+        /// </summary>
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            try { DisposeStoredQueriesWatcher(); } catch { }
+            try
+            {
+                foreach (var kv in _gitDirWatchers)
+                {
+                    try { kv.Value?.Dispose(); } catch { }
+                }
+                _gitDirWatchers.Clear();
+            }
+            catch { }
+            try { _storedQueriesWatcherDebounce?.Stop(); } catch { }
+            _storedQueriesWatcherDebounce = null;
+        }
 
         // ---- dependencies ----
         private readonly SnapshotStore _store;
@@ -39,6 +64,7 @@ namespace AutoTabOrganiser.UI.ViewModels
         private readonly Action _snapshotNow;
         private readonly Action _quickSwitcher;
         private readonly Action _tagConfig;
+        private readonly Action _newView;
         private readonly Func<SnapshotRecord, Task> _openAsNewSnapshot;
         private readonly Func<List<string>, List<string>, List<string>> _showTagPicker;
         private readonly Func<string, string> _promptCommitMessage;
@@ -57,6 +83,12 @@ namespace AutoTabOrganiser.UI.ViewModels
         // Throttle for the duplicate sweep — Environment.TickCount when it last ran. Set to
         // int.MinValue so the very first refresh after launch still runs the sweep.
         private int _lastSweepTickMs = int.MinValue;
+        // Single-flight gate for MaybeSweepDuplicates. CompareExchange flips 0→1 to claim the
+        // run; any concurrent caller sees the existing 1 and bails. Reset to 0 in the finally.
+        // Without this, two FS-watcher events firing within the throttle window can both enter
+        // the body and run the (expensive) sweep concurrently — wasted I/O even though the
+        // sweep itself is idempotent.
+        private int _sweepInFlight; // 0 = idle, 1 = running
 
         // ---- observable collections ----
         public ObservableCollection<TabRowViewModel> Tabs { get; } = new ObservableCollection<TabRowViewModel>();
@@ -188,11 +220,11 @@ namespace AutoTabOrganiser.UI.ViewModels
         // ---- commands ----
         public ICommand OpenStorageCommand { get; }
         public ICommand OpenConfigFolderCommand { get; }
-        public ICommand OpenTempOutputFolderCommand { get; }
         public ICommand OpenSettingsCommand { get; }
         public ICommand SnapshotNowCommand { get; }
         public ICommand QuickSwitcherCommand { get; }
         public ICommand TagConfigCommand { get; }
+        public ICommand NewViewCommand { get; }
         public ICommand ClearSearchCommand { get; }
         public ICommand CloseInfoBarCommand { get; }
 
@@ -232,6 +264,7 @@ namespace AutoTabOrganiser.UI.ViewModels
                                    Action snapshotNow,
                                    Action quickSwitcher,
                                    Action tagConfig,
+                                   Action newView,
                                    Func<SnapshotRecord, Task> openAsNewSnapshot,
                                    Func<List<string>, List<string>, List<string>> showTagPicker,
                                    Func<string, string> promptCommitMessage,
@@ -249,6 +282,7 @@ namespace AutoTabOrganiser.UI.ViewModels
             _snapshotNow = snapshotNow;
             _quickSwitcher = quickSwitcher;
             _tagConfig = tagConfig;
+            _newView = newView;
             _openAsNewSnapshot = openAsNewSnapshot;
             _showTagPicker = showTagPicker;
             _promptCommitMessage = promptCommitMessage;
@@ -262,11 +296,11 @@ namespace AutoTabOrganiser.UI.ViewModels
 
             OpenStorageCommand          = new RelayCommand(OpenStorage);
             OpenConfigFolderCommand     = new RelayCommand(OpenConfigFolder);
-            OpenTempOutputFolderCommand = new RelayCommand(OpenTempOutputFolder);
             OpenSettingsCommand         = new RelayCommand(() => _openSettings?.Invoke());
             SnapshotNowCommand   = new RelayCommand(() => _snapshotNow?.Invoke());
             QuickSwitcherCommand = new RelayCommand(() => _quickSwitcher?.Invoke());
             TagConfigCommand     = new RelayCommand(() => _tagConfig?.Invoke());
+            NewViewCommand       = new RelayCommand(() => _newView?.Invoke());
             ClearSearchCommand   = new RelayCommand(() => SearchText = "");
             CloseInfoBarCommand  = new RelayCommand(HideInfoBar);
 
@@ -566,7 +600,10 @@ namespace AutoTabOrganiser.UI.ViewModels
                 ReplaceCollection(Tabs, rows);
                 TabsEmptyVisible = rows.Count == 0;
                 KickGitStatusUpdate(rows);
-                RefreshRecent();
+                // RefreshRecent intentionally NOT called here. Recent is always the unfiltered
+                // top-N regardless of search text, so search keystrokes shouldn't trigger a
+                // second ListTabs roundtrip. RefreshAll (called on snapshot writes / tab events)
+                // still updates both.
             }
             catch (Exception ex) { _log?.Error("RefreshTabs failed", ex); }
         }
@@ -701,6 +738,11 @@ namespace AutoTabOrganiser.UI.ViewModels
             var nowMs = Environment.TickCount;
             // unchecked subtract handles tick-count wraparound after ~25 days of uptime.
             if (_lastSweepTickMs != int.MinValue && unchecked(nowMs - _lastSweepTickMs) < intervalMs) return;
+
+            // Single-flight: claim the run before recording the time. If a concurrent caller
+            // beat us to it, bail without updating _lastSweepTickMs so we'll re-evaluate on
+            // the next call instead of skipping the next throttle window entirely.
+            if (System.Threading.Interlocked.CompareExchange(ref _sweepInFlight, 1, 0) != 0) return;
             _lastSweepTickMs = nowMs;
 
             try
@@ -745,6 +787,10 @@ namespace AutoTabOrganiser.UI.ViewModels
             {
                 _log?.Warn("duplicate sweep failed: " + ex.Message);
             }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _sweepInFlight, 0);
+            }
         }
 
         /// <summary>
@@ -767,6 +813,29 @@ namespace AutoTabOrganiser.UI.ViewModels
             // unique in `desired`. Keying by path collapses duplicates and would crash Move()
             // when two desired entries point at the same row.
             string TabIdOf(StoredQueryRowViewModel r) => r?.Source?.TabId ?? "";
+
+            // Defensive uniqueness: the upstream contract is that `desired` already has one
+            // entry per TabId, but if a caller bug ever produces a duplicate TabId the diff
+            // loop below would call Move() on a single-element collection (oldIndex=0 → i=1)
+            // and throw ArgumentOutOfRangeException. Collapse to first-occurrence-wins here
+            // and warn so the upstream bug doesn't silently cascade into a UI crash.
+            {
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                var deduped = new List<(TabSummary t, GitFileStatus st, string path)>(desired.Count);
+                int dropped = 0;
+                foreach (var d in desired)
+                {
+                    var tid = d.t?.TabId ?? "";
+                    if (string.IsNullOrEmpty(tid)) { deduped.Add(d); continue; }
+                    if (seen.Add(tid)) deduped.Add(d);
+                    else dropped++;
+                }
+                if (dropped > 0)
+                {
+                    _log?.Warn($"ApplyStoredQueriesDiff: dropped {dropped} duplicate-tab-id entries from desired list.");
+                    desired = deduped;
+                }
+            }
 
             var desiredTabIds = new HashSet<string>(
                 desired.Select(d => d.t?.TabId ?? ""), StringComparer.Ordinal);
@@ -1034,22 +1103,6 @@ namespace AutoTabOrganiser.UI.ViewModels
             catch (Exception ex) { _log?.Error("Open config folder failed", ex); }
         }
 
-        private void OpenTempOutputFolder()
-        {
-            var root = _store?.Root;
-            if (string.IsNullOrEmpty(root)) return;
-            try
-            {
-                // OpenSnapshotInNewTabAsync materialises snapshots into <store-root>/open before
-                // handing them to SSMS — that's the "temporary output" the user is after.
-                var dir = Path.Combine(root, "open");
-                Directory.CreateDirectory(dir);
-                var safe = dir.Replace("\"", "");
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{safe}\"") { UseShellExecute = true });
-            }
-            catch (Exception ex) { _log?.Error("Open temp output folder failed", ex); }
-        }
-
         private void RevealSnapshot()
         {
             var path = _store?.Root;
@@ -1231,6 +1284,10 @@ namespace AutoTabOrganiser.UI.ViewModels
             // RefreshAll so the new file shows in StoredQueries with fresh git status, plus
             // the git icon on the same tab in RECENT / search / pinned updates immediately.
             RefreshAll();
+            // Open the freshly-written file in SSMS so focus switches to the saved instance.
+            // OpenTabFromHistoryAsync prefers the saved-reason snapshot's on-disk path (just
+            // indexed above), so this surfaces the canonical file rather than a scratch copy.
+            OpenTabById(t.TabId);
         }
 
         private void ClearPendingSave()
@@ -1646,25 +1703,16 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             if (t == null) return null;
 
-            // Prefer the most recent on-disk file from a saved-reason snapshot. After a
-            // user saves a tab via "Save to scripts folder…" and then edits it in SSMS,
-            // subsequent edit snapshots record the SSMS temp moniker as file_path — using
-            // that for git lookups misses real Stored Queries files. Walk the recent
-            // saved-reason snapshots and pick the first whose file is still on disk.
-            var savedSnaps = _store.ListSnapshots(
-                "tab_id=$t AND reason='saved' AND file_path IS NOT NULL",
-                new[] { new KeyValuePair<string, object>("$t", t.TabId) }, 10);
-            foreach (var snap in savedSnaps)
-            {
-                if (!string.IsNullOrEmpty(snap.FilePath) && File.Exists(snap.FilePath))
-                    return snap.FilePath;
-            }
-
-            // Fallback: latest snapshot's file_path. Used for tabs that have never been
-            // explicitly saved (open-from-disk scripts that were just edited).
-            var snaps = _store.ListSnapshots("tab_id=$t",
-                new[] { new KeyValuePair<string, object>("$t", t.TabId) }, 1);
-            return snaps.Count == 0 ? null : snaps[0].FilePath;
+            // Hot path: TabSummary already carries the denormalised saved/latest paths from
+            // ListTabs (scalar subqueries served by composite indexes). Prefer the most-recent
+            // saved-reason file_path *if still on disk* — after a user saves a tab and edits
+            // it in SSMS, subsequent edit snapshots record the SSMS temp moniker as file_path,
+            // which would mislead git lookups. The check against File.Exists discards stale
+            // entries (file deleted/moved). Fall back to the latest snapshot's file_path for
+            // tabs that have never been explicitly saved.
+            if (!string.IsNullOrEmpty(t.SavedFilePath) && File.Exists(t.SavedFilePath))
+                return t.SavedFilePath;
+            return t.LatestFilePath;
         }
 
         private static void ReplaceCollection<T>(ObservableCollection<T> target, IEnumerable<T> rows)
