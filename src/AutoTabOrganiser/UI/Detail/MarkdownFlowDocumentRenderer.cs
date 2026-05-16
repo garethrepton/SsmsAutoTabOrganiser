@@ -114,7 +114,10 @@ namespace AutoTabOrganiser.UI.Detail
                         Padding = new Thickness(8, 4, 8, 4),
                         TextIndent = 0
                     };
-                    p.Inlines.Add(new Run(cb.Lines.ToString()));
+                    // Iterate cb.Lines.Lines explicitly. The StringLineGroup's ToString varies
+                    // by Markdig version (some return a "1-5" line-range summary instead of the
+                    // joined text) — explicit slicing guarantees we render the actual code.
+                    p.Inlines.Add(new Run(JoinLines(cb.Lines)));
                     target.Add(p);
                     break;
                 }
@@ -133,7 +136,7 @@ namespace AutoTabOrganiser.UI.Detail
                 {
                     if (block is LeafBlock leaf && leaf.Lines.Count > 0)
                     {
-                        target.Add(new Paragraph(new Run(leaf.Lines.ToString()))
+                        target.Add(new Paragraph(new Run(JoinLines(leaf.Lines)))
                         { Margin = new Thickness(0, 0, 0, 6) });
                     }
                     else if (block is ContainerBlock container)
@@ -145,6 +148,24 @@ namespace AutoTabOrganiser.UI.Detail
                     break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Joins a Markdig <c>StringLineGroup</c>'s lines with newlines, slicing each line by
+        /// its declared range so we get the actual source text — not <c>ToString()</c>, which
+        /// in some Markdig versions returns a "(N-M)" line-range summary rather than the body.
+        /// </summary>
+        private static string JoinLines(Markdig.Helpers.StringLineGroup group)
+        {
+            if (group.Count == 0) return string.Empty;
+            var sb = new System.Text.StringBuilder();
+            var lines = group.Lines; // backing array; only the first .Count entries are valid
+            for (int i = 0; i < group.Count; i++)
+            {
+                if (i > 0) sb.Append('\n');
+                sb.Append(lines[i].Slice.ToString());
+            }
+            return sb.ToString();
         }
 
         private static double HeadingSize(int level)

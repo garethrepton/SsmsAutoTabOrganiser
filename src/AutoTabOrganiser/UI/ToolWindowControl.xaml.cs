@@ -32,10 +32,18 @@ namespace AutoTabOrganiser.UI
             InitializeComponent();
             _detailPane = new DetailPane();
             DetailHost.Content = _detailPane;
+            // When the tool window is closed (especially a multi-instance one), tear down VM
+            // resources — FileSystemWatchers and DispatcherTimers — so they don't leak. Unloaded
+            // fires reliably when the WPF visual is torn down from the SSMS frame.
+            Unloaded += (s, e) =>
+            {
+                try { _vm?.Dispose(); } catch { }
+            };
         }
 
         public void Initialise(SnapshotStore store, Func<string, Task> openTabId, Action onSettingsClick,
                                Action onSnapshotNow, Action onQuickSwitcher, Action onTagConfig,
+                               Action onNewView,
                                Logger log, SettingsStore settings, string viewMode, string sortMode)
         {
             _vm = new ToolWindowViewModel(store, settings, log,
@@ -44,6 +52,7 @@ namespace AutoTabOrganiser.UI
                 snapshotNow: onSnapshotNow,
                 quickSwitcher: onQuickSwitcher,
                 tagConfig: onTagConfig,
+                newView: onNewView,
                 openAsNewSnapshot: r => OpenSnapshotHandler != null ? OpenSnapshotHandler(r) : Task.CompletedTask,
                 showTagPicker: ShowTagPickerDialog,
                 promptCommitMessage: PromptForCommitMessage,
@@ -132,13 +141,6 @@ namespace AutoTabOrganiser.UI
         private void OnSaveNameBox_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Escape) { _vm?.CancelSaveScriptsCommand.Execute(null); e.Handled = true; }
-        }
-
-        // ---- storage-path label click → same as the Open button ----
-
-        private void OnStoragePath_Click(object sender, MouseButtonEventArgs e)
-        {
-            _vm?.OpenStorageCommand.Execute(null);
         }
 
         // ---- "Pin tag" submenu — populated dynamically from the right-clicked row's tags. ----

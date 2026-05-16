@@ -34,5 +34,8 @@ namespace AutoTabOrganiser.Storage
         public string Desc { get; set; }
         public string Server { get; set; }       // last-known SSMS server name
         public string Database { get; set; }     // last-known SSMS database name
+        public long AccessCount { get; set; }    // total snapshots ever written for this tab (frecency signal)
+        public string SavedFilePath { get; set; }  // file_path of the most recent saved-reason snapshot (the .sql on disk)
+        public string LatestFilePath { get; set; } // file_path of the most recent snapshot of any reason (fallback)
     }
 }

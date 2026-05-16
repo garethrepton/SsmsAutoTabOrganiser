@@ -8,7 +8,7 @@ namespace AutoTabOrganiser.Tree
 {
     internal sealed class SearchTerm
     {
-        public string Field { get; set; } // null | "name" | "tag" | "folder" | "desc" | "since" | "content"
+        public string Field { get; set; } // null | "name" | "tag" | "folder" | "desc" | "since" | "content" | "server"/"srv" | "database"/"db"
         public string Value { get; set; }
         public bool Negate { get; set; }
     }
@@ -97,6 +97,16 @@ namespace AutoTabOrganiser.Tree
                         break;
                     case "desc":
                         clause = "(IFNULL(desc,'') LIKE " + pname + " COLLATE NOCASE)";
+                        pars.Add(new KeyValuePair<string, object>(pname, "%" + Like(t.Value) + "%"));
+                        break;
+                    case "server":
+                    case "srv":
+                        clause = "(IFNULL(server,'') LIKE " + pname + " COLLATE NOCASE)";
+                        pars.Add(new KeyValuePair<string, object>(pname, "%" + Like(t.Value) + "%"));
+                        break;
+                    case "database":
+                    case "db":
+                        clause = "(IFNULL(database,'') LIKE " + pname + " COLLATE NOCASE)";
                         pars.Add(new KeyValuePair<string, object>(pname, "%" + Like(t.Value) + "%"));
                         break;
                     case "since":

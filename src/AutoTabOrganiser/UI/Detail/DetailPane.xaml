@@ -27,9 +27,12 @@
             </ItemsControl>
             <TextBlock x:Name="ConnectionText" Margin="0,6,0,0" Opacity="0.7" />
             <TextBlock x:Name="LastSnapshotText" Margin="0,2,0,0" Opacity="0.7" />
+            <!-- Auto vertical scrollbar so long descriptions don't get silently truncated. The
+                 outer ScrollViewer handles overflow for the rest of the StackPanel; the inner
+                 scrollbar only appears when the document genuinely overflows. -->
             <FlowDocumentScrollViewer x:Name="MarkdownHost" Margin="0,8,0,0"
                                        Background="Transparent"
-                                       VerticalScrollBarVisibility="Disabled" />
+                                       VerticalScrollBarVisibility="Auto" />
             <TextBlock x:Name="ErrorText" Foreground="OrangeRed" Margin="0,4,0,0" TextWrapping="Wrap" />
         </StackPanel>
     </ScrollViewer>
