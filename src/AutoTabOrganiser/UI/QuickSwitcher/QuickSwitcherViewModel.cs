@@ -50,8 +50,28 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
         public TabRowViewModel Selected
         {
             get => _selected;
-            set { if (ReferenceEquals(_selected, value)) return; _selected = value; Notify(); }
+            set { if (ReferenceEquals(_selected, value)) return; _selected = value; Notify(); SchedulePreviewLoad(); }
         }
+
+        private string _previewHeader = "";
+        public string PreviewHeader { get => _previewHeader; private set { if (_previewHeader == value) return; _previewHeader = value; Notify(); } }
+
+        private string _previewText = "";
+        public string PreviewText
+        {
+            get => _previewText;
+            private set
+            {
+                if (_previewText == value) return;
+                _previewText = value;
+                Notify();
+                Notify(nameof(HasPreview));
+                Notify(nameof(NoPreview));
+            }
+        }
+
+        public bool HasPreview => !string.IsNullOrEmpty(_previewText);
+        public bool NoPreview  =>  string.IsNullOrEmpty(_previewText);
 
         private string _statusText = "";
         public string StatusText { get => _statusText; private set { if (_statusText == value) return; _statusText = value; Notify(); } }
@@ -186,6 +206,80 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                 // async-void exception.
                 try { _log?.Error("QuickSwitcher refresh outer failure", outer); } catch { }
             }
+        }
+
+        // ---- preview pane ----
+
+        private DispatcherTimer _previewDebounce;
+        private CancellationTokenSource _previewCts;
+        private int _previewLoadSeq;
+
+        private void SchedulePreviewLoad()
+        {
+            if (_previewDebounce == null)
+            {
+                _previewDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
+                _previewDebounce.Tick += (s, e) => { _previewDebounce.Stop(); LoadPreviewForSelected(); };
+            }
+            _previewDebounce.Stop();
+            _previewDebounce.Start();
+        }
+
+        // async void: same pattern as Refresh — guarded by an outer try so an escaping
+        // exception can't crash the SSMS process via the async-void SyncContext path.
+        private async void LoadPreviewForSelected()
+        {
+            try
+            {
+                var sel = _selected;
+                if (sel == null) { PreviewHeader = ""; PreviewText = ""; return; }
+                var summary = sel.Source;
+                if (summary == null) { PreviewHeader = ""; PreviewText = ""; return; }
+
+                var folder = string.IsNullOrEmpty(summary.Folder) ? "Unfiled" : summary.Folder;
+                var name   = string.IsNullOrEmpty(summary.Name)   ? "(unnamed)" : summary.Name;
+                PreviewHeader = folder + " / " + name;
+
+                var snapshotId = summary.LatestSnapshotId;
+                if (string.IsNullOrEmpty(snapshotId)) { PreviewText = ""; return; }
+
+                _previewCts?.Cancel();
+                var cts = _previewCts = new CancellationTokenSource();
+                var ct  = cts.Token;
+                var seq = ++_previewLoadSeq;
+
+                try
+                {
+                    var raw = await Task.Run(() => _store.ReadSnapshotContentById(snapshotId), ct).ConfigureAwait(true);
+                    if (ct.IsCancellationRequested || seq != _previewLoadSeq) return;
+                    PreviewText = ExtractPreviewLines(raw, 12);
+                }
+                catch (OperationCanceledException) { /* superseded */ }
+                catch (Exception ex)
+                {
+                    try { _log?.Error("QuickSwitcher preview load failed", ex); } catch { }
+                    PreviewText = "";
+                }
+            }
+            catch (Exception outer)
+            {
+                try { _log?.Error("QuickSwitcher preview outer failure", outer); } catch { }
+            }
+        }
+
+        private static string ExtractPreviewLines(string text, int max)
+        {
+            if (string.IsNullOrEmpty(text)) return "";
+            var meta = MetadataParser.Parse(text);
+            var body = meta.CommentBlockEndExclusive < text.Length
+                ? text.Substring(meta.CommentBlockEndExclusive)
+                : "";
+            if (string.IsNullOrEmpty(body)) return "";
+            var lines = body.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var first = 0;
+            while (first < lines.Length && string.IsNullOrWhiteSpace(lines[first])) first++;
+            var taken = lines.Skip(first).Take(max).ToArray();
+            return string.Join(Environment.NewLine, taken);
         }
 
         private void Notify([CallerMemberName] string name = null)
