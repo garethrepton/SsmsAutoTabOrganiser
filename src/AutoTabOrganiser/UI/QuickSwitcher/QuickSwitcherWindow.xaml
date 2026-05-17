@@ -14,7 +14,7 @@
         ResizeMode="NoResize"
         AllowsTransparency="False"
         SizeToContent="Manual"
-        Width="640" Height="440"
+        Width="880" Height="460"
         Topmost="True"
         Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
         Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
@@ -143,16 +143,73 @@
                          FontSize="14" />
             </Grid>
 
-            <ListBox Grid.Row="1" x:Name="ResultList"
-                     Margin="0,8,0,0"
-                     BorderThickness="1"
-                     ItemsSource="{Binding Results}"
-                     ItemTemplate="{StaticResource ResultRowTemplate}"
-                     SelectedItem="{Binding Selected, Mode=TwoWay}"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                     IsTabStop="False"
-                     Focusable="False"
-                     MouseDoubleClick="OnResult_MouseDoubleClick" />
+            <Grid Grid.Row="1" Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="360" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <ListBox Grid.Column="0" x:Name="ResultList"
+                         BorderThickness="1"
+                         ItemsSource="{Binding Results}"
+                         ItemTemplate="{StaticResource ResultRowTemplate}"
+                         SelectedItem="{Binding Selected, Mode=TwoWay}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         IsTabStop="False"
+                         Focusable="False"
+                         MouseDoubleClick="OnResult_MouseDoubleClick" />
+
+                <!-- Thin vertical rule between list and preview. -->
+                <Border Grid.Column="1" Width="1" Margin="8,0,8,0"
+                        Background="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}" />
+
+                <!-- Preview pane: header with breadcrumb + ~12 lines of mono-spaced SQL. -->
+                <Grid Grid.Column="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Text="{Binding PreviewHeader}"
+                               TextTrimming="CharacterEllipsis"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,6" />
+
+                    <Border Grid.Row="1"
+                            BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
+                            BorderThickness="1"
+                            Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}">
+                        <Grid>
+                            <!-- Empty-state placeholder when no snapshot content is available. -->
+                            <TextBlock Text="No preview available"
+                                       Style="{StaticResource MutedText}"
+                                       FontStyle="Italic"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       Visibility="{Binding NoPreview, Converter={StaticResource BoolToVis}}" />
+
+                            <!-- Read-only, no-border TextBox so users can highlight the snippet
+                                 without it becoming a focus target — IsTabStop=False keeps the
+                                 keyboard contract (↑↓ Enter Esc) intact. -->
+                            <TextBox Text="{Binding PreviewText, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     IsReadOnlyCaretVisible="False"
+                                     IsTabStop="False"
+                                     Focusable="False"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     FontFamily="Consolas, Cascadia Mono, Lucida Console"
+                                     FontSize="12"
+                                     Padding="8,6"
+                                     TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto"
+                                     Visibility="{Binding HasPreview, Converter={StaticResource BoolToVis}}" />
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
 
             <DockPanel Grid.Row="2" Margin="0,8,0,0">
                 <TextBlock DockPanel.Dock="Left" Style="{StaticResource MutedText}"

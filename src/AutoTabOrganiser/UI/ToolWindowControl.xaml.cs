@@ -44,7 +44,7 @@ namespace AutoTabOrganiser.UI
         public void Initialise(SnapshotStore store, Func<string, Task> openTabId, Action onSettingsClick,
                                Action onSnapshotNow, Action onQuickSwitcher, Action onTagConfig,
                                Action onNewView,
-                               Logger log, SettingsStore settings, string viewMode, string sortMode)
+                               Logger log, SettingsStore settings, string sortMode)
         {
             _vm = new ToolWindowViewModel(store, settings, log,
                 openTabId: openTabId,
@@ -79,7 +79,6 @@ namespace AutoTabOrganiser.UI
 
         public Func<SnapshotRecord, Task> OpenSnapshotHandler { get; set; }
 
-        public string ViewMode => "list";
         public string SortMode => _vm?.SortMode ?? "recent";
 
         public void RefreshTabs() => _vm?.RefreshAll();
@@ -121,6 +120,23 @@ namespace AutoTabOrganiser.UI
             if (e.Key == Key.Escape && !string.IsNullOrEmpty(_vm?.SearchText))
             {
                 _vm.SearchText = "";
+                e.Handled = true;
+            }
+        }
+
+        // Search-syntax help: toggle the popover open. StaysOpen=False on the Popup gives us
+        // click-outside dismissal for free; OnSearchHelpPopup_KeyDown handles Esc.
+        private void OnSearchHelp_Click(object sender, RoutedEventArgs e)
+        {
+            if (SearchHelpPopup == null) return;
+            SearchHelpPopup.IsOpen = !SearchHelpPopup.IsOpen;
+        }
+
+        private void OnSearchHelpPopup_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape && SearchHelpPopup != null)
+            {
+                SearchHelpPopup.IsOpen = false;
                 e.Handled = true;
             }
         }

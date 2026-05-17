@@ -397,12 +397,19 @@
 
         <!-- Toolbar: top-of-sidebar global commands. Replaces the Tools-menu entries that
              previously hosted these. Buttons stay reasonably small so they don't dominate
-             the sidebar. -->
+             the sidebar. Two-column grid: command buttons on the left, last-snapshot
+             indicator right-aligned so the user can see at a glance when the safety-net
+             last fired. -->
         <Border Grid.Row="0"
                 Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
                 BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
                 BorderThickness="0,0,0,1" Padding="4,2">
-            <StackPanel Orientation="Horizontal">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+            <StackPanel Grid.Column="0" Orientation="Horizontal">
                 <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
                         Background="Transparent" BorderThickness="0"
                         ToolTip="Snapshot the active tab now (Ctrl+Alt+H, S)"
@@ -466,6 +473,23 @@
                                         Moniker="{x:Static catalog:KnownMonikers.NewWindow}" />
                 </Button>
             </StackPanel>
+
+                <!-- Last-snapshot indicator. Updates on every snapshot (RefreshRecent fires
+                     UpdateLastSnapshotFromRecent) and self-ticks once a second so the
+                     relative text stays current between snapshots. Vertical-bar divider
+                     matches the one before the "New View" button above. -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal"
+                            VerticalAlignment="Center" HorizontalAlignment="Right"
+                            Margin="0,0,4,0">
+                    <Border Width="1" Margin="4,2"
+                            Background="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}" />
+                    <TextBlock Text="{Binding LastSnapshotText}"
+                               ToolTip="{Binding LastSnapshotTooltip}"
+                               FontSize="11" Opacity="0.7"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!-- Inline info bar -->
@@ -534,6 +558,7 @@
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
                                     <imaging:CrispImage Grid.Column="0" Width="14" Height="14"
                                                         Margin="6,0,4,0" Opacity="0.6"
@@ -552,6 +577,90 @@
                                         <imaging:CrispImage Width="12" Height="12" Opacity="0.7"
                                                             Moniker="{x:Static catalog:KnownMonikers.Cancel}" />
                                     </Button>
+                                    <!-- Search-syntax help. Clicking opens a popover (below) anchored
+                                         to this button; Esc / click-outside dismisses. -->
+                                    <Button Grid.Column="3" x:Name="SearchHelpButton"
+                                            Click="OnSearchHelp_Click"
+                                            Background="Transparent" BorderThickness="0"
+                                            Padding="4,0" MinWidth="0" ToolTip="Search syntax help">
+                                        <imaging:CrispImage Width="12" Height="12" Opacity="0.7"
+                                                            Moniker="{x:Static catalog:KnownMonikers.StatusInformation}" />
+                                    </Button>
+                                    <Popup x:Name="SearchHelpPopup" Grid.Column="3"
+                                           PlacementTarget="{Binding ElementName=SearchHelpButton}"
+                                           Placement="Bottom"
+                                           StaysOpen="False" AllowsTransparency="True"
+                                           PopupAnimation="Fade">
+                                        <Border Width="280"
+                                                Background="{DynamicResource {x:Static vsui:EnvironmentColors.DropDownPopupBackgroundBeginBrushKey}}"
+                                                BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.DropDownPopupBorderBrushKey}}"
+                                                BorderThickness="1" Padding="10,8"
+                                                KeyDown="OnSearchHelpPopup_KeyDown">
+                                            <StackPanel>
+                                                <TextBlock FontWeight="SemiBold" Margin="0,0,0,6"
+                                                           Text="Search syntax" />
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                    </Grid.RowDefinitions>
+
+                                                    <TextBlock Grid.Row="0" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="foo" />
+                                                    <TextBlock Grid.Row="0" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Plain text — name / desc / content" />
+
+                                                    <TextBlock Grid.Row="1" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="name:foo" />
+                                                    <TextBlock Grid.Row="1" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Restrict to tab name" />
+
+                                                    <TextBlock Grid.Row="2" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="#tag" />
+                                                    <TextBlock Grid.Row="2" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Has tag (e.g. #wip)" />
+
+                                                    <TextBlock Grid.Row="3" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="-#tag" />
+                                                    <TextBlock Grid.Row="3" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Does NOT have tag (e.g. -#archive)" />
+
+                                                    <TextBlock Grid.Row="4" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="folder:x" />
+                                                    <TextBlock Grid.Row="4" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Folder match (e.g. folder:reports)" />
+
+                                                    <TextBlock Grid.Row="5" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="desc:y" />
+                                                    <TextBlock Grid.Row="5" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Description text (e.g. desc:bug)" />
+
+                                                    <TextBlock Grid.Row="6" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="since:7d" />
+                                                    <TextBlock Grid.Row="6" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Modified in last N days" />
+                                                </Grid>
+                                                <TextBlock Margin="0,8,0,0" Opacity="0.6" FontSize="11"
+                                                           Text="Esc clears the search box." />
+                                            </StackPanel>
+                                        </Border>
+                                    </Popup>
                                 </Grid>
                             </Border>
 

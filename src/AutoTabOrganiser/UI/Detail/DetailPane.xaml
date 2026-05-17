@@ -6,34 +6,153 @@
              Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
              Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
              FontFamily="Segoe UI" FontSize="12">
-    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Margin="8" x:Name="RootPanel">
-            <TextBlock x:Name="TitleText" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
-            <TextBlock x:Name="BreadcrumbText" Opacity="0.7" Margin="0,4,0,0" TextWrapping="Wrap" />
-            <ItemsControl x:Name="TagChips" Margin="0,6,0,0">
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <Border CornerRadius="4" Padding="6,2" Margin="0,0,4,4"
-                                Background="{DynamicResource {x:Static vsui:EnvironmentColors.AccentLightBrushKey}}"
-                                BorderThickness="1"
-                                BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.AccentBorderBrushKey}}">
-                            <TextBlock Text="{Binding}" />
-                        </Border>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-            <TextBlock x:Name="ConnectionText" Margin="0,6,0,0" Opacity="0.7" />
-            <TextBlock x:Name="LastSnapshotText" Margin="0,2,0,0" Opacity="0.7" />
-            <!-- Auto vertical scrollbar so long descriptions don't get silently truncated. The
-                 outer ScrollViewer handles overflow for the rest of the StackPanel; the inner
-                 scrollbar only appears when the document genuinely overflows. -->
-            <FlowDocumentScrollViewer x:Name="MarkdownHost" Margin="0,8,0,0"
-                                       Background="Transparent"
-                                       VerticalScrollBarVisibility="Auto" />
-            <TextBlock x:Name="ErrorText" Foreground="OrangeRed" Margin="0,4,0,0" TextWrapping="Wrap" />
-        </StackPanel>
-    </ScrollViewer>
+    <Grid>
+        <!-- Read mode: existing display + an Edit pencil at the top-right.
+             Edit mode: TextBoxes for name/folder/tags/desc + Save/Cancel buttons.
+             A single Grid hosts both modes; visibility-toggled rather than swapped so
+             the parent's fixed 240px row height keeps a stable layout either way. -->
+
+        <!-- ===================== READ MODE ===================== -->
+        <ScrollViewer x:Name="ReadModeHost"
+                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <Grid Margin="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0"
+                           x:Name="TitleText" FontSize="16" FontWeight="SemiBold" TextWrapping="Wrap" />
+
+                <!-- Edit (pencil) button. Tooltip explains the closed-tab limitation when applicable.
+                     IsEnabled is flipped from code-behind when the selected row isn't open. -->
+                <Button Grid.Row="0" Grid.Column="1"
+                        x:Name="EditButton"
+                        VerticalAlignment="Top" HorizontalAlignment="Right"
+                        Padding="6,2" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        Content="Edit"
+                        ToolTip="Edit metadata (name, folder, tags, description)"
+                        Click="OnEditClicked" />
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                           x:Name="BreadcrumbText" Opacity="0.7" Margin="0,4,0,0" TextWrapping="Wrap" />
+
+                <ItemsControl Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2"
+                              x:Name="TagChips" Margin="0,6,0,0">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border CornerRadius="4" Padding="6,2" Margin="0,0,4,4"
+                                    Background="{DynamicResource {x:Static vsui:EnvironmentColors.AccentLightBrushKey}}"
+                                    BorderThickness="1"
+                                    BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.AccentBorderBrushKey}}">
+                                <TextBlock Text="{Binding}" />
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
+                           x:Name="ConnectionText" Margin="0,6,0,0" Opacity="0.7" />
+                <TextBlock Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2"
+                           x:Name="LastSnapshotText" Margin="0,2,0,0" Opacity="0.7" />
+
+                <!-- Auto vertical scrollbar so long descriptions don't get silently truncated.
+                     The outer ScrollViewer handles overflow for the rest of the StackPanel; the
+                     inner scrollbar only appears when the document genuinely overflows. -->
+                <FlowDocumentScrollViewer Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2"
+                                           x:Name="MarkdownHost" Margin="0,8,0,0"
+                                           Background="Transparent"
+                                           VerticalScrollBarVisibility="Auto" />
+                <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2"
+                           x:Name="ErrorText" Foreground="OrangeRed" Margin="0,4,0,0" TextWrapping="Wrap" />
+            </Grid>
+        </ScrollViewer>
+
+        <!-- ===================== EDIT MODE ===================== -->
+        <!-- Collapsed by default; toggled visible when the user clicks Edit. The description
+             box flexes to fill the remaining space and scrolls internally so the pane never
+             overflows the parent's fixed 240px row. -->
+        <Grid x:Name="EditModeHost" Visibility="Collapsed" Margin="8">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="Name" Opacity="0.7" Margin="0,0,0,2" />
+            <TextBox Grid.Row="1" x:Name="EditNameBox" Margin="0,0,0,6"
+                     Padding="4,2" BorderThickness="1"
+                     Background="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBackgroundBrushKey}}"
+                     Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
+                     BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBorderBrushKey}}" />
+
+            <Grid Grid.Row="2" Margin="0,0,0,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="8" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Folder" Opacity="0.7" Margin="0,0,0,2" />
+                <TextBox  Grid.Row="1" Grid.Column="0" x:Name="EditFolderBox"
+                          Padding="4,2" BorderThickness="1"
+                          ToolTip="Slash-separated folder path. Blank = Unfiled."
+                          Background="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBackgroundBrushKey}}"
+                          Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
+                          BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBorderBrushKey}}" />
+
+                <TextBlock Grid.Row="0" Grid.Column="2" Text="Tags" Opacity="0.7" Margin="0,0,0,2" />
+                <TextBox  Grid.Row="1" Grid.Column="2" x:Name="EditTagsBox"
+                          Padding="4,2" BorderThickness="1"
+                          ToolTip="Comma-separated tags (no leading '#')."
+                          Background="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBackgroundBrushKey}}"
+                          Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
+                          BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBorderBrushKey}}" />
+            </Grid>
+
+            <TextBlock Grid.Row="3" Text="Description (markdown)" Opacity="0.7" Margin="0,0,0,2" />
+            <TextBox Grid.Row="4" x:Name="EditDescBox"
+                     AcceptsReturn="True" AcceptsTab="True"
+                     TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto"
+                     Padding="4,2" BorderThickness="1"
+                     FontFamily="Consolas, Cascadia Mono, Lucida Console"
+                     Background="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBackgroundBrushKey}}"
+                     Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
+                     BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.ComboBoxBorderBrushKey}}" />
+
+            <TextBlock Grid.Row="5" x:Name="EditErrorText"
+                       Foreground="OrangeRed" Margin="0,4,0,0" TextWrapping="Wrap" />
+
+            <StackPanel Grid.Row="6" Orientation="Horizontal"
+                        HorizontalAlignment="Right" Margin="0,6,0,0">
+                <Button x:Name="SaveButton" Content="Save" MinWidth="70" Padding="8,3"
+                        Margin="0,0,6,0" IsDefault="True" Click="OnSaveClicked" />
+                <Button x:Name="CancelButton" Content="Cancel" MinWidth="70" Padding="8,3"
+                        IsCancel="True" Click="OnCancelClicked" />
+            </StackPanel>
+        </Grid>
+    </Grid>
 </UserControl>

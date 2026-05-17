@@ -54,6 +54,8 @@ namespace AutoTabOrganiser.UI.ViewModels
             catch { }
             try { _storedQueriesWatcherDebounce?.Stop(); } catch { }
             _storedQueriesWatcherDebounce = null;
+            try { _lastSnapshotTimer?.Stop(); } catch { }
+            _lastSnapshotTimer = null;
         }
 
         // ---- dependencies ----
@@ -398,6 +400,7 @@ namespace AutoTabOrganiser.UI.ViewModels
             Notify(nameof(SortMode));
             LoadPinnedTags();
             EnsureStoredQueriesWatcher();
+            EnsureLastSnapshotTimer();
             RefreshAll();
         }
 
@@ -675,6 +678,7 @@ namespace AutoTabOrganiser.UI.ViewModels
                 RecentEmptyVisible = rows.Count == 0;
                 Notify(nameof(ListEmptyVisible));
                 KickGitStatusUpdate(rows);
+                UpdateLastSnapshotFromRecent();
             }
             catch (Exception ex) { _log?.Error("RefreshRecent failed", ex); }
         }
@@ -1881,6 +1885,64 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             _infoBarTimer?.Stop();
             InfoBarVisible = false;
+        }
+
+        // ---- last-snapshot indicator ----
+        // Drives the toolbar "Snapshotted Xs ago" text. UpdateLastSnapshotFromRecent runs after
+        // each RefreshRecent (called on every snapshot via the package onTabUpdated callback);
+        // a 1s DispatcherTimer re-emits LastSnapshotText so the relative formatting stays
+        // current between snapshots.
+
+        private DateTime? _lastSnapshotUtc;
+        public DateTime? LastSnapshotUtc
+        {
+            get => _lastSnapshotUtc;
+            private set
+            {
+                if (_lastSnapshotUtc == value) return;
+                _lastSnapshotUtc = value;
+                Notify();
+                Notify(nameof(LastSnapshotText));
+                Notify(nameof(LastSnapshotTooltip));
+            }
+        }
+
+        public string LastSnapshotText
+        {
+            get
+            {
+                if (!_lastSnapshotUtc.HasValue) return "—";
+                var ms = new DateTimeOffset(DateTime.SpecifyKind(_lastSnapshotUtc.Value, DateTimeKind.Utc))
+                    .ToUnixTimeMilliseconds();
+                return "Snapshotted " + RelativeTime.Format(ms);
+            }
+        }
+
+        public string LastSnapshotTooltip
+            => _lastSnapshotUtc.HasValue
+                ? _lastSnapshotUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                : "No snapshot taken in this session yet.";
+
+        private DispatcherTimer _lastSnapshotTimer;
+
+        private void EnsureLastSnapshotTimer()
+        {
+            if (_lastSnapshotTimer != null) return;
+            _lastSnapshotTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _lastSnapshotTimer.Tick += (s, e) => Notify(nameof(LastSnapshotText));
+            _lastSnapshotTimer.Start();
+        }
+
+        private void UpdateLastSnapshotFromRecent()
+        {
+            long maxMs = 0;
+            foreach (var row in Recent)
+            {
+                var ts = row?.Source?.Ts ?? 0;
+                if (ts > maxMs) maxMs = ts;
+            }
+            if (maxMs <= 0) { LastSnapshotUtc = null; return; }
+            LastSnapshotUtc = DateTimeOffset.FromUnixTimeMilliseconds(maxMs).UtcDateTime;
         }
 
         // ---- helpers ----

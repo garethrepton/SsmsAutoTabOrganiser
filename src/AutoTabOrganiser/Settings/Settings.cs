@@ -69,7 +69,6 @@ namespace AutoTabOrganiser.Settings
         public List<string> TreeExpandedFolders { get; set; } = new List<string>();
         public int          DetailPaneHeightPx  { get; set; } = 240;
         public List<string> SearchHistory       { get; set; } = new List<string>();
-        public string       TabsViewMode        { get; set; } = "tree";   // "tree" | "list"
         public string       TabsSortMode        { get; set; } = "recent"; // "recent" | "name-asc" | "name-desc" | "folder-name"
         public List<string> PinnedTags          { get; set; } = new List<string>();
         /// <summary>

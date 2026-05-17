@@ -462,7 +462,6 @@ namespace AutoTabOrganiser
                 onNewView:       () => OnNewViewInvoked(this, EventArgs.Empty),
                 log: _log,
                 settings: _settings,
-                viewMode: s.Ui.TabsViewMode,
                 sortMode: s.Ui.TabsSortMode);
             control.OpenSnapshotHandler = OpenSnapshotInNewTabAsync;
 
