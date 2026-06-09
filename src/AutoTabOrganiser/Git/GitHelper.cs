@@ -58,23 +58,30 @@ namespace AutoTabOrganiser.Git
             return repo != null;
         }
 
+        /// <summary>
+        /// Escape a value for interpolation inside a double-quoted CLI argument. Windows
+        /// paths can't legally contain '"', but DB-sourced or settings-sourced strings
+        /// aren't filesystem-validated — defence in depth against argument injection.
+        /// </summary>
+        public static string EscapeArg(string value) => (value ?? "").Replace("\"", "\\\"");
+
         public static GitResult Add(string filePath, Logger log)
         {
             var dir = Path.GetDirectoryName(filePath);
-            return Run(dir, $"add \"{filePath}\"", log);
+            return Run(dir, $"add \"{EscapeArg(filePath)}\"", log);
         }
 
         public static GitResult Commit(string filePath, string message, Logger log)
         {
             var dir = Path.GetDirectoryName(filePath);
-            var safeMsg = (message ?? "Update").Replace("\"", "\\\"");
-            return Run(dir, $"commit --only \"{filePath}\" -m \"{safeMsg}\"", log);
+            var safeMsg = EscapeArg(message ?? "Update");
+            return Run(dir, $"commit --only \"{EscapeArg(filePath)}\" -m \"{safeMsg}\"", log);
         }
 
         public static GitResult Status(string filePath, Logger log)
         {
             var dir = Path.GetDirectoryName(filePath);
-            return Run(dir, $"status --porcelain \"{filePath}\"", log);
+            return Run(dir, $"status --porcelain \"{EscapeArg(filePath)}\"", log);
         }
 
         /// <summary>
@@ -85,7 +92,32 @@ namespace AutoTabOrganiser.Git
         public static GitResult Diff(string filePath, Logger log)
         {
             var dir = Path.GetDirectoryName(filePath);
-            return Run(dir, $"diff HEAD -- \"{filePath}\"", log);
+            return Run(dir, $"diff HEAD -- \"{EscapeArg(filePath)}\"", log);
+        }
+
+        /// <summary>
+        /// Current branch name plus commits ahead/behind the upstream. Read-only local
+        /// plumbing (rev-parse / rev-list) — never touches the network. ahead/behind are -1
+        /// when there is no upstream configured (the branch name alone is still returned).
+        /// log is intentionally not taken: this runs on every panel refresh and would drown
+        /// the daily log in identical entries.
+        /// </summary>
+        public static (string branch, int ahead, int behind) BranchStatus(string repoRoot)
+        {
+            var b = Run(repoRoot, "rev-parse --abbrev-ref HEAD", null);
+            var branch = b.Ok ? (b.StdOut ?? "").Trim() : null;
+            if (string.IsNullOrEmpty(branch) || branch == "HEAD") return (null, -1, -1); // detached or error
+
+            var c = Run(repoRoot, "rev-list --left-right --count @{upstream}...HEAD", null);
+            if (!c.Ok) return (branch, -1, -1); // typically: no upstream configured
+
+            // Output: "<behind>\t<ahead>" (left = upstream-only commits, right = local-only).
+            var parts = (c.StdOut ?? "").Trim().Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 2
+                && int.TryParse(parts[0], out var behind)
+                && int.TryParse(parts[1], out var ahead))
+                return (branch, ahead, behind);
+            return (branch, -1, -1);
         }
 
         public static GitResult Run(string workingDir, string args, Logger log)

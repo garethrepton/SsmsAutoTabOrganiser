@@ -452,6 +452,13 @@
                     <imaging:CrispImage Width="16" Height="16"
                                         Moniker="{x:Static catalog:KnownMonikers.OpenFolder}" />
                 </Button>
+                <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip="Export everything (snapshot index + all .sql snapshots + settings) to a portable zip"
+                        Command="{Binding ExportArchiveCommand}">
+                    <imaging:CrispImage Width="16" Height="16"
+                                        Moniker="{x:Static catalog:KnownMonikers.Export}" />
+                </Button>
                 <!-- Pin tag lives in the toolbar (instead of its own row below) so the pinned-
                      sections list comes flush against the Stored Queries section — saves a row
                      of vertical space when no tags are pinned, and stays discoverable. -->
@@ -488,26 +495,58 @@
                                FontSize="11" Opacity="0.7"
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                    <Border Width="1" Margin="4,2"
+                            Background="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}" />
+                    <!-- Trust-made-visible: when the safety-net backup last fired. -->
+                    <TextBlock Text="{Binding LastBackupText}"
+                               ToolTip="{Binding LastBackupTooltip}"
+                               FontSize="11" Opacity="0.7"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
                 </StackPanel>
             </Grid>
         </Border>
 
-        <!-- Inline info bar -->
-        <Border Grid.Row="1"
-                Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
-                BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
-                BorderThickness="0,0,0,1" Padding="8,4"
-                Visibility="{Binding InfoBarVisible, Converter={StaticResource BoolToVis}}">
-            <DockPanel>
-                <Button DockPanel.Dock="Right" Content="✕"
-                        MinWidth="0" Padding="4,0" Margin="6,0,0,0"
-                        Command="{Binding CloseInfoBarCommand}"
-                        Background="Transparent" BorderThickness="0" />
-                <TextBlock Text="{Binding InfoMessage}" VerticalAlignment="Center"
-                           TextTrimming="CharacterEllipsis"
-                           Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
-            </DockPanel>
-        </Border>
+        <!-- Inline info bar + session-restore banner (stacked; each visibility-driven). -->
+        <StackPanel Grid.Row="1">
+            <Border Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
+                    BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
+                    BorderThickness="0,0,0,1" Padding="8,4"
+                    Visibility="{Binding InfoBarVisible, Converter={StaticResource BoolToVis}}">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="✕"
+                            MinWidth="0" Padding="4,0" Margin="6,0,0,0"
+                            Command="{Binding CloseInfoBarCommand}"
+                            Background="Transparent" BorderThickness="0" />
+                    <TextBlock Text="{Binding InfoMessage}" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                </DockPanel>
+            </Border>
+
+            <!-- Session restore: one-click reopen of everything the last session had open.
+                 Shown once per SSMS launch when the previous session left open tabs behind
+                 (crash or normal exit — snapshots survive both). -->
+            <Border Background="{DynamicResource {x:Static vsui:EnvironmentColors.CommandBarGradientBeginBrushKey}}"
+                    BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
+                    BorderThickness="0,0,0,1" Padding="8,4"
+                    Visibility="{Binding SessionRestoreVisible, Converter={StaticResource BoolToVis}}">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="✕"
+                            MinWidth="0" Padding="4,0" Margin="6,0,0,0"
+                            Command="{Binding DismissSessionRestoreCommand}"
+                            ToolTip="Dismiss (the tabs stay in RECENT either way)"
+                            Background="Transparent" BorderThickness="0" />
+                    <Button DockPanel.Dock="Right" Content="Reopen all"
+                            Padding="8,1" Margin="6,0,0,0"
+                            Command="{Binding RestoreSessionCommand}"
+                            ToolTip="Reopen every tab from the last session, including unsaved content captured by snapshots" />
+                    <TextBlock Text="{Binding SessionRestoreText}" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}" />
+                </DockPanel>
+            </Border>
+        </StackPanel>
 
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <StackPanel>
@@ -568,7 +607,7 @@
                                              Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                                              BorderThickness="0" Background="Transparent"
                                              KeyDown="OnSearchBox_KeyDown"
-                                             ToolTip="Empty = recent. Type to search: foo, name:foo, #tag, folder:x, desc:y, since:7d, -#archive (Esc to clear)" />
+                                             ToolTip="Empty = recent. Type to search: foo, name:foo, #tag, folder:x, desc:y, since:7d, server:x, db:x, -#archive (Esc to clear)" />
                                     <Button Grid.Column="2"
                                             Command="{Binding ClearSearchCommand}"
                                             Visibility="{Binding ShowSearchClear, Converter={StaticResource BoolToVis}}"
@@ -605,6 +644,8 @@
                                                         <ColumnDefinition Width="*" />
                                                     </Grid.ColumnDefinitions>
                                                     <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
@@ -655,6 +696,18 @@
                                                     <TextBlock Grid.Row="6" Grid.Column="1" Opacity="0.8"
                                                                Margin="0,1,0,1"
                                                                Text="Modified in last N days" />
+
+                                                    <TextBlock Grid.Row="7" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="server:x" />
+                                                    <TextBlock Grid.Row="7" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Connection server (e.g. server:PRD01)" />
+
+                                                    <TextBlock Grid.Row="8" Grid.Column="0" FontFamily="Consolas"
+                                                               Margin="0,1,8,1" Text="db:x" />
+                                                    <TextBlock Grid.Row="8" Grid.Column="1" Opacity="0.8"
+                                                               Margin="0,1,0,1"
+                                                               Text="Connection database (e.g. db:Sales)" />
                                                 </Grid>
                                                 <TextBlock Margin="0,8,0,0" Opacity="0.6" FontSize="11"
                                                            Text="Esc clears the search box." />
@@ -694,12 +747,19 @@
 
                 <Expander IsExpanded="True">
                     <Expander.Header>
-                        <TextBlock Text="{Binding StoredQueriesHeader}" Style="{StaticResource SectionHeader}" />
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding StoredQueriesHeader}" Style="{StaticResource SectionHeader}" />
+                            <!-- Branch + ahead/behind for the stored-queries repo, e.g. "main ↑2". -->
+                            <TextBlock Text="{Binding StoredQueriesBranchText}" Margin="8,0,0,0"
+                                       Style="{StaticResource SectionHeader}" Opacity="0.55"
+                                       Visibility="{Binding StoredQueriesPushVisible, Converter={StaticResource BoolToVis}}" />
+                        </StackPanel>
                     </Expander.Header>
                     <StackPanel>
                         <Grid Margin="8,4,8,4">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="Auto" />
@@ -718,16 +778,25 @@
                                     <TextBlock Text="Commit All" />
                                 </StackPanel>
                             </Button>
+                            <!-- Push: the ONLY action in the extension that can touch the
+                                 network, and only because it runs the user's own `git push`
+                                 against their configured remote. Never automatic. -->
+                            <Button Grid.Column="2" Margin="4,0,0,0" MinWidth="0" Padding="4,2"
+                                    ToolTip="git push (sends commits to YOUR configured remote — never runs automatically)"
+                                    Command="{Binding PushStoredQueriesCommand}"
+                                    Visibility="{Binding StoredQueriesPushVisible, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="Push ↑" />
+                            </Button>
                             <!-- Icon-only Open + Terminal: text labels are redundant with the
                                  tooltip and ate ~80px of horizontal space that the commit
                                  message box can now use instead. -->
-                            <Button Grid.Column="2" Margin="4,0,0,0" MinWidth="0" Padding="4,2"
+                            <Button Grid.Column="3" Margin="4,0,0,0" MinWidth="0" Padding="4,2"
                                     ToolTip="Open the Stored Queries folder in Explorer"
                                     Command="{Binding OpenStoredQueriesFolderCommand}">
                                 <imaging:CrispImage Width="14" Height="14"
                                                     Moniker="{x:Static catalog:KnownMonikers.OpenFolder}" />
                             </Button>
-                            <Button Grid.Column="3" Margin="4,0,0,0" MinWidth="0" Padding="4,2"
+                            <Button Grid.Column="4" Margin="4,0,0,0" MinWidth="0" Padding="4,2"
                                     ToolTip="Open a terminal in the Stored Queries folder (Windows Terminal if available, else PowerShell)"
                                     Command="{Binding OpenStoredQueriesTerminalCommand}">
                                 <imaging:CrispImage Width="14" Height="14"

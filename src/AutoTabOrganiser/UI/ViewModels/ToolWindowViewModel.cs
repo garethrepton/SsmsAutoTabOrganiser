@@ -56,6 +56,10 @@ namespace AutoTabOrganiser.UI.ViewModels
             _storedQueriesWatcherDebounce = null;
             try { _lastSnapshotTimer?.Stop(); } catch { }
             _lastSnapshotTimer = null;
+            try { _searchDebounce?.Stop(); } catch { }
+            _searchDebounce = null;
+            try { _infoBarTimer?.Stop(); } catch { }
+            _infoBarTimer = null;
         }
 
         // ---- dependencies ----
@@ -187,6 +191,52 @@ namespace AutoTabOrganiser.UI.ViewModels
         // ---- storage path footer ----
         public string StoragePath { get; private set; }
 
+        // ---- session restore banner ----
+        private bool _sessionRestoreVisible;
+        public bool SessionRestoreVisible
+        {
+            get => _sessionRestoreVisible;
+            private set { if (_sessionRestoreVisible == value) return; _sessionRestoreVisible = value; Notify(); }
+        }
+
+        private string _sessionRestoreText = "";
+        public string SessionRestoreText
+        {
+            get => _sessionRestoreText;
+            private set { if (_sessionRestoreText == value) return; _sessionRestoreText = value; Notify(); }
+        }
+
+        private Action _sessionRestoreAction;
+
+        /// <summary>
+        /// Surface the "reopen last session" offer. Called once by the package after wiring;
+        /// content survives in the snapshot store regardless, this is just the one-click path.
+        /// </summary>
+        public void OfferSessionRestore(int tabCount, Action reopen)
+        {
+            if (tabCount <= 0 || reopen == null) return;
+            _sessionRestoreAction = reopen;
+            SessionRestoreText = tabCount == 1
+                ? "Last session had 1 open tab."
+                : $"Last session had {tabCount} open tabs.";
+            SessionRestoreVisible = true;
+        }
+
+        private void RestoreSession()
+        {
+            var action = _sessionRestoreAction;
+            _sessionRestoreAction = null;
+            SessionRestoreVisible = false;
+            try { action?.Invoke(); }
+            catch (Exception ex) { _log?.Error("Session restore failed", ex); Info("Session restore failed: " + ex.Message); }
+        }
+
+        private void DismissSessionRestore()
+        {
+            _sessionRestoreAction = null;
+            SessionRestoreVisible = false;
+        }
+
         // ---- info bar ----
         private string _infoMessage = "";
         private bool _infoBarVisible;
@@ -299,6 +349,11 @@ namespace AutoTabOrganiser.UI.ViewModels
         public ICommand GitCommitCommand { get; }
         public ICommand GitStatusCommand { get; }
 
+        public ICommand RestoreSessionCommand { get; }
+        public ICommand DismissSessionRestoreCommand { get; }
+        public ICommand ExportArchiveCommand { get; }
+        public ICommand PushStoredQueriesCommand { get; }
+
         // ---- ctor ----
 
         public ToolWindowViewModel(SnapshotStore store, SettingsStore settings, Logger log,
@@ -390,6 +445,11 @@ namespace AutoTabOrganiser.UI.ViewModels
                 return GitHelper.Commit(path, msg, _log);
             }));
             GitStatusCommand = new RelayCommand(p => RunGit((p as TabRowViewModel)?.Source, "status", path => GitHelper.Status(path, _log)));
+
+            RestoreSessionCommand        = new RelayCommand(RestoreSession);
+            DismissSessionRestoreCommand = new RelayCommand(DismissSessionRestore);
+            ExportArchiveCommand         = new RelayCommand(ExportArchive);
+            PushStoredQueriesCommand     = new RelayCommand(PushStoredQueries);
         }
 
         // ---- public API used by the view / package ----
@@ -443,18 +503,35 @@ namespace AutoTabOrganiser.UI.ViewModels
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.DirectoryName,
                     EnableRaisingEvents = true
                 };
+                // FS-watcher events fire on a threadpool thread; an exception escaping the
+                // handler takes down the whole SSMS process. Nothing a refresh does is worth
+                // that, so the handlers are hard guards.
                 FileSystemEventHandler onChange = (sender, e) =>
                 {
-                    OptimisticMarkModified(e?.FullPath);
-                    DebounceStoredQueriesRefresh();
+                    try
+                    {
+                        OptimisticMarkModified(e?.FullPath);
+                        DebounceStoredQueriesRefresh();
+                    }
+                    catch (Exception ex) { _log?.Warn("Stored-queries watcher callback failed: " + ex.Message); }
                 };
                 _storedQueriesWatcher.Changed  += onChange;
                 _storedQueriesWatcher.Created  += onChange;
                 _storedQueriesWatcher.Deleted  += onChange;
                 _storedQueriesWatcher.Renamed  += (s2, e2) =>
                 {
-                    OptimisticMarkModified(e2?.FullPath);
-                    DebounceStoredQueriesRefresh();
+                    try
+                    {
+                        OptimisticMarkModified(e2?.FullPath);
+                        DebounceStoredQueriesRefresh();
+                    }
+                    catch (Exception ex) { _log?.Warn("Stored-queries watcher rename callback failed: " + ex.Message); }
+                };
+                // Buffer-overflow (too many FS events): the watcher drops events and raises
+                // Error. A full refresh re-reads disk truth, so recovering is just refreshing.
+                _storedQueriesWatcher.Error += (s2, e2) =>
+                {
+                    try { DebounceStoredQueriesRefresh(); } catch { }
                 };
             }
             catch (Exception ex) { _log?.Warn("Stored-queries watcher init failed: " + ex.Message); }
@@ -502,11 +579,19 @@ namespace AutoTabOrganiser.UI.ViewModels
                         NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
                         EnableRaisingEvents = true
                     };
-                    FileSystemEventHandler onGitChange = (s, e) => DebounceStoredQueriesRefresh();
+                    // Same hard guard as the stored-queries watcher: these fire on a threadpool
+                    // thread and an escaping exception would crash SSMS.
+                    FileSystemEventHandler onGitChange = (s, e) =>
+                    {
+                        try { DebounceStoredQueriesRefresh(); } catch { }
+                    };
                     w.Changed += onGitChange;
                     w.Created += onGitChange;
                     w.Deleted += onGitChange;
-                    w.Renamed += (s, e) => DebounceStoredQueriesRefresh();
+                    w.Renamed += (s, e) =>
+                    {
+                        try { DebounceStoredQueriesRefresh(); } catch { }
+                    };
                     _gitDirWatchers[repo] = w;
                 }
                 catch (Exception ex) { _log?.Debug("git-dir watcher init failed for " + repo + ": " + ex.Message); }
@@ -883,8 +968,29 @@ namespace AutoTabOrganiser.UI.ViewModels
                 _log?.Info($"Stored queries refresh: folder='{treeFolder}', tabs={tabs.Count}, with-path={paths.Count}, " +
                            $"git: modified={modified}, untracked={untracked}, staged={staged}, clean={clean}, notInRepo={notInRepo}, unknown={unknown}");
 
+                // Branch + ahead/behind for the stored-queries repo — read-only local git
+                // commands (rev-parse / rev-list), no network. log:null keeps the per-refresh
+                // log noise down; failures just blank the indicator.
+                string branchText = "";
+                try
+                {
+                    var repoRoot = GitHelper.FindRepoRoot(ResolveStoredQueriesPath());
+                    if (repoRoot != null)
+                    {
+                        var (branch, ahead, behind) = GitHelper.BranchStatus(repoRoot);
+                        if (!string.IsNullOrEmpty(branch))
+                        {
+                            branchText = branch;
+                            if (ahead > 0)  branchText += $" ↑{ahead}";
+                            if (behind > 0) branchText += $" ↓{behind}";
+                        }
+                    }
+                }
+                catch (Exception ex) { _log?.Debug("Branch status failed: " + ex.Message); }
+
                 Marshal(() =>
                 {
+                    StoredQueriesBranchText = branchText;
                     var desired = new List<(TabSummary t, GitFileStatus st, string path)>();
                     foreach (var t in tabs)
                     {
@@ -1415,6 +1521,27 @@ namespace AutoTabOrganiser.UI.ViewModels
             var subDirAbs = string.IsNullOrEmpty(sanitisedSub)
                 ? folderPath
                 : Path.Combine(folderPath, sanitisedSub.Replace('/', Path.DirectorySeparatorChar));
+
+            // Containment guard: segment sanitisation can't stop a drive-rooted subfolder
+            // ("C:\Elsewhere" splits into segments that survive Sanitise, and Path.Combine
+            // yields the rooted path). Saved scripts must only ever land under the
+            // configured folder.
+            try
+            {
+                var rootFull = Path.GetFullPath(folderPath).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+                var subFull  = Path.GetFullPath(subDirAbs).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+                if (!subFull.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    Info("Subfolder must be inside the Stored Queries folder (" + folderPath + ").");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Info("Invalid subfolder: " + ex.Message);
+                return;
+            }
+
             Directory.CreateDirectory(subDirAbs);
 
             var fileName = picked + ".sql";
@@ -1715,8 +1842,8 @@ namespace AutoTabOrganiser.UI.ViewModels
                     var added = GitHelper.Add(p, _log);
                     if (!added.Ok) { Info("git add failed for " + p + ": " + (added.StdErr ?? added.Error)); return; }
                 }
-                var safe = msg.Replace("\"", "\\\"");
-                var quoted = string.Join(" ", pair.Value.Select(p => "\"" + p + "\""));
+                var safe = GitHelper.EscapeArg(msg);
+                var quoted = string.Join(" ", pair.Value.Select(p => "\"" + GitHelper.EscapeArg(p) + "\""));
                 var result = GitHelper.Run(repo, $"commit -m \"{safe}\" -- {quoted}", _log);
                 if (!result.Ok) { Info("git commit failed in " + repo + ": " + (result.StdErr ?? result.Error ?? result.StdOut)); return; }
             }
@@ -1929,7 +2056,14 @@ namespace AutoTabOrganiser.UI.ViewModels
         {
             if (_lastSnapshotTimer != null) return;
             _lastSnapshotTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            _lastSnapshotTimer.Tick += (s, e) => Notify(nameof(LastSnapshotText));
+            // LastBackupText's getter throttles its own disk probe to every 5 minutes, so
+            // notifying it on the same 1s tick costs nothing between probes.
+            _lastSnapshotTimer.Tick += (s, e) =>
+            {
+                Notify(nameof(LastSnapshotText));
+                Notify(nameof(LastBackupText));
+                Notify(nameof(LastBackupTooltip));
+            };
             _lastSnapshotTimer.Start();
         }
 
@@ -1943,6 +2077,121 @@ namespace AutoTabOrganiser.UI.ViewModels
             }
             if (maxMs <= 0) { LastSnapshotUtc = null; return; }
             LastSnapshotUtc = DateTimeOffset.FromUnixTimeMilliseconds(maxMs).UtcDateTime;
+        }
+
+        // ---- last-backup indicator + export ----
+        // Makes the safety net visible: the toolbar shows when the pre-migration DB backup
+        // last ran, and the export command produces a portable zip of the entire store.
+
+        private DateTime? _lastBackupUtc;
+        private int _lastBackupCheckedTick = int.MinValue;
+        private const int BackupCheckIntervalMs = 5 * 60 * 1000;
+
+        public string LastBackupText
+        {
+            get
+            {
+                MaybeRefreshLastBackup();
+                if (!_lastBackupUtc.HasValue) return "no backup yet";
+                var ms = new DateTimeOffset(DateTime.SpecifyKind(_lastBackupUtc.Value, DateTimeKind.Utc))
+                    .ToUnixTimeMilliseconds();
+                return "backup " + RelativeTime.Format(ms);
+            }
+        }
+
+        public string LastBackupTooltip
+            => _lastBackupUtc.HasValue
+                ? "Pre-migration DB backup written " + _lastBackupUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                  + "\nBackups live under " + (_store?.Root ?? "?") + "\\backups"
+                : "No upgrade backup exists yet — one is written automatically before any version migration."
+                  + "\nUse the Export button for an on-demand portable archive.";
+
+        /// <summary>Directory mtime probe, throttled to every 5 minutes; tick-driven.</summary>
+        private void MaybeRefreshLastBackup()
+        {
+            var now = Environment.TickCount;
+            if (_lastBackupCheckedTick != int.MinValue
+                && unchecked(now - _lastBackupCheckedTick) < BackupCheckIntervalMs) return;
+            _lastBackupCheckedTick = now;
+            try { _lastBackupUtc = _store?.GetLastBackupTimeUtc(); } catch { }
+        }
+
+        private void ExportArchive()
+        {
+            if (_store == null) return;
+            try
+            {
+                var dlg = new Microsoft.Win32.SaveFileDialog
+                {
+                    Title = "Export Auto Tab Organiser archive",
+                    FileName = "AutoTabOrganiser-export-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip",
+                    Filter = "Zip archive (*.zip)|*.zip"
+                };
+                if (dlg.ShowDialog() != true) return;
+                var dest = dlg.FileName;
+
+                Info("Exporting archive…");
+                Task.Run(() =>
+                {
+                    try
+                    {
+                        _store.ExportArchive(dest, _settings?.FilePath);
+                        Marshal(() => Info("Export complete: " + dest));
+                    }
+                    catch (Exception ex)
+                    {
+                        _log?.Error("Export archive failed", ex);
+                        Marshal(() => Info("Export failed: " + ex.Message));
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                _log?.Error("Export archive failed", ex);
+                Info("Export failed: " + ex.Message);
+            }
+        }
+
+        // ---- stored-queries branch status + push ----
+
+        private string _storedQueriesBranchText = "";
+        /// <summary>"main · ↑2 ↓1" for the stored-queries repo; empty when not in a repo.</summary>
+        public string StoredQueriesBranchText
+        {
+            get => _storedQueriesBranchText;
+            private set { if (_storedQueriesBranchText == value) return; _storedQueriesBranchText = value; Notify(); Notify(nameof(StoredQueriesPushVisible)); }
+        }
+
+        public bool StoredQueriesPushVisible => !string.IsNullOrEmpty(_storedQueriesBranchText);
+
+        /// <summary>
+        /// Push the stored-queries repo. STRICTLY user-initiated — this is the only place in
+        /// the extension that can cause network traffic, it runs the user's own git client
+        /// against the remote they configured, and only on an explicit button click.
+        /// </summary>
+        private void PushStoredQueries()
+        {
+            var repo = GitHelper.FindRepoRoot(ResolveStoredQueriesPath());
+            if (repo == null) { Info("Stored Queries folder is not inside a git repository."); return; }
+            Info("Pushing…");
+            Task.Run(() =>
+            {
+                var r = GitHelper.Run(repo, "push", _log);
+                Marshal(() =>
+                {
+                    if (r.Ok) Info("Pushed.");
+                    else Info("git push failed: " + FirstNonEmpty(r.StdErr, r.Error, r.StdOut, "exit " + r.ExitCode));
+                    _gitResolver.Invalidate();
+                    RefreshStoredQueries();
+                });
+            });
+        }
+
+        private static string FirstNonEmpty(params string[] values)
+        {
+            foreach (var v in values)
+                if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+            return "";
         }
 
         // ---- helpers ----

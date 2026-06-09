@@ -59,6 +59,11 @@ namespace AutoTabOrganiser
         // duplicates of the latest content and just slow down shutdown.
         internal volatile bool IsShuttingDown;
 
+        // Tabs flagged open by the previous session, captured before ClearAllOpenFlags.
+        // Consumed (and nulled) when the user accepts or dismisses the restore offer.
+        private List<TabSummary> _previousSessionTabs;
+        private bool _sessionRestoreOffered;
+
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
             await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
@@ -89,6 +94,12 @@ namespace AutoTabOrganiser
             try
             {
                 _store = new SnapshotStore(storageRoot, _log);
+                // Capture which tabs the previous session had open BEFORE the flags are
+                // cleared — this list powers the "Reopen tabs from last session" banner.
+                // Survives crash and clean shutdown alike (the shutdown path skips per-tab
+                // close handling, so is_open stays 1 either way).
+                try { _previousSessionTabs = _store.GetOpenTabs(); }
+                catch (Exception ex) { _log.Warn("Previous-session tab capture failed: " + ex.Message); }
                 _store.ClearAllOpenFlags();
             }
             catch (Exception ex)
@@ -151,6 +162,15 @@ namespace AutoTabOrganiser
             // Best-effort: clear out forgotten files in the open/ folder so it doesn't grow
             // unbounded. Runs in the background so init doesn't block on disk I/O.
             _ = Task.Run(() => PruneStaleOpenFiles());
+
+            // Best-effort: delete snapshot files no DB row references (crash between disk
+            // write and DB insert, or a file delete that lost a race). The 7-day age floor
+            // guarantees an in-flight write can never be swept.
+            _ = Task.Run(() =>
+            {
+                try { _store.SweepOrphanSnapshotFiles(TimeSpan.FromDays(7)); }
+                catch (Exception ex) { _log?.Debug("Orphan snapshot sweep failed: " + ex.Message); }
+            });
 
             // Best-effort: scan the saved-scripts folder and import any .sql files that aren't
             // already represented in the DB. Useful when:
@@ -464,9 +484,85 @@ namespace AutoTabOrganiser
                 settings: _settings,
                 sortMode: s.Ui.TabsSortMode);
             control.OpenSnapshotHandler = OpenSnapshotInNewTabAsync;
+            control.RestoreSnapshotHandler = RestoreSnapshotAsNewTabAsync;
 
             // Seed the active-tab id so the row is pinned even before any focus change.
             try { control.SetActiveTabId(_docTracker?.GetActiveTabId()); } catch { }
+
+            // Offer session restore on the first tool window only — secondary "New View"
+            // instances share the same store and don't need a second banner.
+            if (!_sessionRestoreOffered && _previousSessionTabs != null && _previousSessionTabs.Count > 0)
+            {
+                _sessionRestoreOffered = true;
+                var count = _previousSessionTabs.Count;
+                control.OfferSessionRestore(count, () => _ = JoinableTaskFactory.RunAsync(ReopenPreviousSessionAsync));
+            }
+        }
+
+        /// <summary>
+        /// Reopen every tab the previous session had open, newest first. Each open goes
+        /// through <see cref="OpenTabFromHistoryAsync"/>, which prefers the saved on-disk
+        /// script and falls back to materialising the latest snapshot — so unsaved content
+        /// lost to a crash comes back too. Capped so a pathological session can't open a
+        /// hundred windows.
+        /// </summary>
+        private async Task ReopenPreviousSessionAsync()
+        {
+            var tabs = _previousSessionTabs;
+            _previousSessionTabs = null;
+            if (tabs == null) return;
+
+            const int maxReopen = 30;
+            int opened = 0;
+            foreach (var t in tabs)
+            {
+                if (opened >= maxReopen)
+                {
+                    _log?.Info($"Session restore: stopped at {maxReopen} tabs ({tabs.Count - opened} not reopened).");
+                    break;
+                }
+                try
+                {
+                    await OpenTabFromHistoryAsync(t.TabId);
+                    opened++;
+                }
+                catch (Exception ex) { _log?.Warn($"Session restore: reopen failed for {t.TabId}: {ex.Message}"); }
+            }
+            _log?.Info($"Session restore: reopened {opened} tab(s).");
+        }
+
+        /// <summary>
+        /// Open an old snapshot's content as a brand-new query tab. Restore never touches the
+        /// original tab: the content gets a freshly-generated @id (the old trailing @id is
+        /// stripped by SetId) and a "(restored …)" name, so the copy snapshots under its own
+        /// identity from the first poll.
+        /// </summary>
+        internal async Task RestoreSnapshotAsNewTabAsync(SnapshotRecord r)
+        {
+            if (r == null) return;
+            await JoinableTaskFactory.SwitchToMainThreadAsync();
+            try
+            {
+                var content = _store.ReadSnapshotContentById(r.Id) ?? string.Empty;
+
+                var newId = MetadataWriter.GenerateTabId();
+                var stamp = DateTimeOffset.FromUnixTimeMilliseconds(r.Ts).LocalDateTime.ToString("yyyy-MM-dd HH:mm");
+                var baseName = string.IsNullOrEmpty(r.Name) ? "snapshot" : r.Name;
+                var restoredName = baseName + " (restored " + stamp + ")";
+
+                content = MetadataWriter.SetName(content, restoredName);
+                content = MetadataWriter.SetId(content, newId);
+
+                var openDir = Path.Combine(_store.Root, "open");
+                Directory.CreateDirectory(openDir);
+                var tmp = Path.Combine(openDir, $"{SafeForFile(restoredName)} [{newId}].sql");
+                File.WriteAllText(tmp, content);
+
+                var dte = (EnvDTE.DTE)await GetServiceAsync(typeof(EnvDTE.DTE));
+                dte?.ItemOperations?.OpenFile(tmp);
+                _log?.Info($"Restored snapshot {r.Id} (tab {r.TabId}, {stamp}) as new tab {newId}.");
+            }
+            catch (Exception ex) { _log.Error("Restore snapshot as new tab failed", ex); }
         }
 
         /// <summary>

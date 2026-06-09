@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using AutoTabOrganiser.Metadata;
 using AutoTabOrganiser.Storage;
+using AutoTabOrganiser.Util;
 
 namespace AutoTabOrganiser.UI.Detail
 {
@@ -36,7 +38,22 @@ namespace AutoTabOrganiser.UI.Detail
         // Captured so OnSaveClicked knows which tab id to patch back into SSMS.
         private TabSummary _current;
 
+        // History-timeline dependencies, injected by the parent control after construction.
+        // Null until Configure runs; the HISTORY section stays collapsed in that state.
+        private SnapshotStore _store;
+        private Func<SnapshotRecord, Task> _restoreAsNewTab;
+
         public DetailPane() { InitializeComponent(); }
+
+        /// <summary>
+        /// Wire the snapshot store (history list + diff content reads) and the restore
+        /// callback ("Open copy" → package opens the old version as a brand-new tab).
+        /// </summary>
+        public void Configure(SnapshotStore store, Func<SnapshotRecord, Task> restoreAsNewTab)
+        {
+            _store = store;
+            _restoreAsNewTab = restoreAsNewTab;
+        }
 
         // ---------- public surface (unchanged signatures — the parent depends on these) ----------
 
@@ -82,6 +99,7 @@ namespace AutoTabOrganiser.UI.Detail
             // is out of scope for this round (see class-level XML doc); we still surface the
             // button so the affordance is discoverable, but the tooltip explains the gate.
             UpdateEditButtonEnabled();
+            RefreshHistory(t);
         }
 
         public void Clear()
@@ -97,12 +115,147 @@ namespace AutoTabOrganiser.UI.Detail
             MarkdownHost.Document = new FlowDocument();
             ErrorText.Text = "";
             UpdateEditButtonEnabled();
+            HistoryList.ItemsSource = null;
+            HistoryExpander.Visibility = Visibility.Collapsed;
         }
 
         public void ShowError(string message)
         {
             Clear();
             ErrorText.Text = message;
+        }
+
+        // ---------- snapshot history timeline ----------
+
+        private sealed class HistoryRow
+        {
+            public SnapshotRecord Record;
+            public string Display { get; set; }
+            public override string ToString() => Display;
+        }
+
+        /// <summary>
+        /// Populate the HISTORY list with every snapshot of the selected tab, newest first.
+        /// Metadata-only query (no content) served by the (tab_id, ts DESC) index, so a
+        /// synchronous load here matches the cost profile of the rest of the pane.
+        /// </summary>
+        private void RefreshHistory(TabSummary t)
+        {
+            HistoryList.ItemsSource = null;
+            HistoryHeaderText.Text = "HISTORY";
+            if (_store == null || t == null || string.IsNullOrEmpty(t.TabId))
+            {
+                HistoryExpander.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            List<SnapshotRecord> snaps;
+            try
+            {
+                snaps = _store.ListSnapshots("tab_id=$t",
+                    new[] { new KeyValuePair<string, object>("$t", t.TabId) }, 200);
+            }
+            catch (Exception ex)
+            {
+                HistoryExpander.Visibility = Visibility.Collapsed;
+                ErrorText.Text = "History load failed: " + ex.Message;
+                return;
+            }
+
+            var rows = new List<HistoryRow>(snaps.Count);
+            for (int i = 0; i < snaps.Count; i++)
+            {
+                var r = snaps[i];
+                var older = i + 1 < snaps.Count ? snaps[i + 1] : null;
+                var when = DateTimeOffset.FromUnixTimeMilliseconds(r.Ts).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss");
+                var delta = older == null ? "" : FormatSizeDelta(r.ContentSize - older.ContentSize);
+                rows.Add(new HistoryRow
+                {
+                    Record = r,
+                    Display = $"{when}  {r.Reason,-6}  {FormatSize(r.ContentSize)}{delta}"
+                });
+            }
+            HistoryList.ItemsSource = rows;
+            HistoryHeaderText.Text = $"HISTORY ({rows.Count})";
+            HistoryExpander.Visibility = rows.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private static string FormatSize(long bytes)
+        {
+            if (bytes < 1024) return bytes + " B";
+            if (bytes < 1024 * 1024) return (bytes / 1024.0).ToString("0.#") + " KB";
+            return (bytes / (1024.0 * 1024.0)).ToString("0.#") + " MB";
+        }
+
+        private static string FormatSizeDelta(long delta)
+        {
+            if (delta == 0) return "";
+            var sign = delta > 0 ? "+" : "−";
+            return $"  ({sign}{FormatSize(Math.Abs(delta))})";
+        }
+
+        private static string SnapshotLabel(SnapshotRecord r)
+            => DateTimeOffset.FromUnixTimeMilliseconds(r.Ts).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")
+               + " (" + r.Reason + ")";
+
+        private void OnHistoryDiffClicked(object sender, RoutedEventArgs e)
+        {
+            if (_store == null) return;
+            var all = HistoryList.ItemsSource as List<HistoryRow>;
+            if (all == null || all.Count == 0) return;
+            var selected = HistoryList.SelectedItems.OfType<HistoryRow>()
+                .OrderByDescending(r => r.Record.Ts).ToList();
+
+            HistoryRow newer, older;
+            if (selected.Count >= 2)
+            {
+                newer = selected[0];
+                older = selected[selected.Count - 1];
+            }
+            else if (selected.Count == 1)
+            {
+                newer = all[0]; // latest
+                older = selected[0];
+                if (ReferenceEquals(newer, older))
+                {
+                    if (all.Count < 2) { ErrorText.Text = "Only one snapshot exists — nothing to diff."; return; }
+                    older = all[1]; // latest vs previous
+                }
+            }
+            else
+            {
+                ErrorText.Text = "Select a snapshot (or Ctrl+Click two) to diff.";
+                return;
+            }
+
+            ErrorText.Text = "";
+            var store = _store;
+            var oldRec = older.Record;
+            var newRec = newer.Record;
+            var title = "snapshot diff — " + (_current?.Name ?? "(unnamed)");
+
+            // Content reads + LCS off the UI thread; only the dialog opens back on it.
+            _ = Task.Run(() =>
+            {
+                string diff;
+                try
+                {
+                    var oldText = store.ReadSnapshotContentById(oldRec.Id) ?? "";
+                    var newText = store.ReadSnapshotContentById(newRec.Id) ?? "";
+                    diff = TextDiff.Unified(oldText, newText, SnapshotLabel(oldRec), SnapshotLabel(newRec));
+                    if (string.IsNullOrEmpty(diff)) diff = "(no changes between these snapshots)";
+                }
+                catch (Exception ex) { diff = "Error: " + ex.Message; }
+                Dispatcher.BeginInvoke((Action)(() => Diff.DiffDialog.Show(title, diff)));
+            });
+        }
+
+        private void OnHistoryRestoreClicked(object sender, RoutedEventArgs e)
+        {
+            var row = HistoryList.SelectedItem as HistoryRow;
+            if (row == null) { ErrorText.Text = "Select a snapshot to open."; return; }
+            ErrorText.Text = "";
+            _ = _restoreAsNewTab?.Invoke(row.Record);
         }
 
         // ---------- read-mode helpers ----------

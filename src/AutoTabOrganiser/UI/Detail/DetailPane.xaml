@@ -28,6 +28,7 @@
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0"
@@ -76,7 +77,39 @@
                                            x:Name="MarkdownHost" Margin="0,8,0,0"
                                            Background="Transparent"
                                            VerticalScrollBarVisibility="Auto" />
-                <TextBlock Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2"
+                <!-- Snapshot history timeline. Every version of this tab, newest first.
+                     Single-select + Diff = that version vs the latest; Ctrl+Click two rows
+                     + Diff = that pair. "Open copy" opens the old version as a NEW tab with
+                     a fresh @id — restore never overwrites the original. -->
+                <Expander Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2"
+                          Margin="0,8,0,0" IsExpanded="True"
+                          x:Name="HistoryExpander" Visibility="Collapsed">
+                    <Expander.Header>
+                        <TextBlock x:Name="HistoryHeaderText" Text="HISTORY"
+                                   FontSize="11" FontWeight="SemiBold" Opacity="0.78" />
+                    </Expander.Header>
+                    <StackPanel>
+                        <ListBox x:Name="HistoryList" MaxHeight="120" Margin="0,4,0,4"
+                                 BorderThickness="1"
+                                 SelectionMode="Extended"
+                                 DisplayMemberPath="Display"
+                                 FontFamily="Consolas, Cascadia Mono, Lucida Console" FontSize="11"
+                                 Background="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowBackgroundBrushKey}}"
+                                 Foreground="{DynamicResource {x:Static vsui:EnvironmentColors.ToolWindowTextBrushKey}}"
+                                 BorderBrush="{DynamicResource {x:Static vsui:EnvironmentColors.PanelBorderBrushKey}}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+                        <DockPanel LastChildFill="False">
+                            <Button DockPanel.Dock="Left" Content="Diff" MinWidth="60" Padding="6,2" Margin="0,0,6,0"
+                                    ToolTip="Diff the selected snapshot against the latest. Ctrl+Click two rows to diff that pair."
+                                    Click="OnHistoryDiffClicked" />
+                            <Button DockPanel.Dock="Left" Content="Open copy" MinWidth="80" Padding="6,2"
+                                    ToolTip="Open this version as a new query tab. The original tab and its history are untouched."
+                                    Click="OnHistoryRestoreClicked" />
+                        </DockPanel>
+                    </StackPanel>
+                </Expander>
+
+                <TextBlock Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="2"
                            x:Name="ErrorText" Foreground="OrangeRed" Margin="0,4,0,0" TextWrapping="Wrap" />
             </Grid>
         </ScrollViewer>

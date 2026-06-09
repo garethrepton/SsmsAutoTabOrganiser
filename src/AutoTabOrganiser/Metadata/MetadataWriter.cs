@@ -66,6 +66,13 @@ namespace AutoTabOrganiser.Metadata
             return SetLeadingKey(text, "file", fileName.Trim());
         }
 
+        /// <summary>Inserts or replaces the leading <c>-- @name: &lt;value&gt;</c> line.</summary>
+        public static string SetName(string text, string name)
+        {
+            if (name == null) name = string.Empty;
+            return SetLeadingKey(text, "name", name.Trim());
+        }
+
         /// <summary>Inserts or replaces <c>-- @server: &lt;value&gt;</c>. Empty value removes nothing — caller should skip the call instead.</summary>
         public static string SetServer(string text, string server)
         {

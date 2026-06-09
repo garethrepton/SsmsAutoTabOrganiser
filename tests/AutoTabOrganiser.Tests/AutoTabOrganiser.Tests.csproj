@@ -19,6 +19,7 @@
     <Compile Include="..\..\src\AutoTabOrganiser\Util\Hashing.cs"           Link="Sut\Hashing.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Util\Logger.cs"            Link="Sut\Logger.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Util\PathSanitiser.cs"     Link="Sut\PathSanitiser.cs" />
+    <Compile Include="..\..\src\AutoTabOrganiser\Util\TextDiff.cs"          Link="Sut\TextDiff.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Metadata\Metadata.cs"      Link="Sut\Metadata.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Metadata\MetadataParser.cs" Link="Sut\MetadataParser.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Metadata\MetadataWriter.cs" Link="Sut\MetadataWriter.cs" />

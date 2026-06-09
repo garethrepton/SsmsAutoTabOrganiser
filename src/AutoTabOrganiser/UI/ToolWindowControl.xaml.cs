@@ -71,6 +71,11 @@ namespace AutoTabOrganiser.UI
                 if (t == null) _detailPane.Clear(); else _detailPane.Show(t);
             };
 
+            // Late-bound lambda: RestoreSnapshotHandler is assigned by the package AFTER
+            // Initialise returns (same pattern as OpenSnapshotHandler above).
+            _detailPane.Configure(store,
+                r => RestoreSnapshotHandler != null ? RestoreSnapshotHandler(r) : Task.CompletedTask);
+
             DataContext = _vm;
             _vm.Initialise(sortMode);
         }
@@ -78,6 +83,16 @@ namespace AutoTabOrganiser.UI
         // ---- public surface used by the package ----
 
         public Func<SnapshotRecord, Task> OpenSnapshotHandler { get; set; }
+
+        /// <summary>Opens an old snapshot as a brand-new tab (fresh @id) — the history "Open copy" action.</summary>
+        public Func<SnapshotRecord, Task> RestoreSnapshotHandler { get; set; }
+
+        /// <summary>
+        /// Show the "reopen last session" banner. <paramref name="reopen"/> runs when the
+        /// user clicks Reopen all; the banner hides itself either way.
+        /// </summary>
+        public void OfferSessionRestore(int tabCount, Action reopen)
+            => _vm?.OfferSessionRestore(tabCount, reopen);
 
         public string SortMode => _vm?.SortMode ?? "recent";
 
@@ -356,117 +371,10 @@ namespace AutoTabOrganiser.UI
             return win.ShowDialog() == true ? result : null;
         }
 
-        /// <summary>
-        /// Modal popup showing a coloured git diff. Each line gets a Run with the appropriate
-        /// foreground brush; we use a single FlowDocument with inline Runs + LineBreaks rather
-        /// than per-line TextBlocks so the layout cost stays roughly proportional to char-count
-        /// rather than control-count, which matters for big diffs.
-        /// </summary>
+        /// <summary>Coloured git diff popup — rendering shared with the history timeline.</summary>
         private static void ShowGitDiffDialog(string fileName, string diff, GitFileStatus status)
         {
-            var win = new Window
-            {
-                Title = "git diff — " + fileName + "  [" + status + "]",
-                Width = 900, Height = 600,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = Application.Current?.MainWindow
-            };
-
-            var grid = new Grid();
-            grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-            var doc = BuildDiffDocument(diff);
-            var viewer = new FlowDocumentScrollViewer
-            {
-                Document = doc,
-                Margin = new Thickness(0),
-                IsToolBarVisible = false,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Auto
-            };
-            Grid.SetRow(viewer, 0);
-
-            var btnPanel = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Margin = new Thickness(8)
-            };
-            var close = new Button { Content = "Close", IsCancel = true, IsDefault = true, MinWidth = 80 };
-            close.Click += (s, e) => win.Close();
-            btnPanel.Children.Add(close);
-            Grid.SetRow(btnPanel, 1);
-
-            grid.Children.Add(viewer);
-            grid.Children.Add(btnPanel);
-            win.Content = grid;
-
-            // Esc closes (also picked up by IsCancel on Close, but explicit handler covers
-            // when focus is on the document viewer).
-            win.PreviewKeyDown += (s, e) =>
-            {
-                if (e.Key == Key.Escape) { win.Close(); e.Handled = true; }
-            };
-
-            win.ShowDialog();
+            Diff.DiffDialog.Show("git diff — " + fileName + "  [" + status + "]", diff);
         }
-
-        private static FlowDocument BuildDiffDocument(string diff)
-        {
-            var doc = new FlowDocument
-            {
-                FontFamily = new FontFamily("Consolas, Cascadia Mono, Lucida Console"),
-                FontSize = 12,
-                PagePadding = new Thickness(8),
-                Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E)),
-                Foreground = new SolidColorBrush(Color.FromRgb(0xDC, 0xDC, 0xDC))
-            };
-
-            var added    = new SolidColorBrush(Color.FromRgb(0x6F, 0xC2, 0x76));
-            var removed  = new SolidColorBrush(Color.FromRgb(0xE0, 0x6C, 0x75));
-            var hunk     = new SolidColorBrush(Color.FromRgb(0x6D, 0xA8, 0xE2));
-            var header   = new SolidColorBrush(Color.FromRgb(0xC5, 0x9E, 0x6E));
-            var muted    = new SolidColorBrush(Color.FromRgb(0x96, 0x96, 0x96));
-
-            var para = new Paragraph { Margin = new Thickness(0) };
-            doc.Blocks.Add(para);
-
-            if (string.IsNullOrEmpty(diff))
-            {
-                para.Inlines.Add(new Run("(empty diff)") { Foreground = muted });
-                return doc;
-            }
-
-            // Cap to 5000 lines so a runaway diff doesn't freeze the layout pass.
-            var lines = diff.Replace("\r\n", "\n").Split('\n');
-            int max = 5000;
-            int count = Math.Min(lines.Length, max);
-            for (int i = 0; i < count; i++)
-            {
-                var line = lines[i];
-                Brush fg;
-                if (line.StartsWith("+++") || line.StartsWith("---") || line.StartsWith("diff ") || line.StartsWith("index "))
-                    fg = header;
-                else if (line.StartsWith("@@"))
-                    fg = hunk;
-                else if (line.Length > 0 && line[0] == '+')
-                    fg = added;
-                else if (line.Length > 0 && line[0] == '-')
-                    fg = removed;
-                else
-                    fg = doc.Foreground;
-
-                para.Inlines.Add(new Run(line) { Foreground = fg });
-                para.Inlines.Add(new LineBreak());
-            }
-            if (lines.Length > max)
-            {
-                para.Inlines.Add(new Run($"… (truncated; {lines.Length - max} more lines)") { Foreground = muted });
-                para.Inlines.Add(new LineBreak());
-            }
-            return doc;
-        }
-
     }
 }

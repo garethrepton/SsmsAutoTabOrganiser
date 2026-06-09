@@ -45,8 +45,35 @@ namespace AutoTabOrganiser.UI.ViewModels
 
         public string Title => Source.Name ?? "(unnamed)";
 
-        public string Subtitle =>
-            string.IsNullOrEmpty(Source.Folder) ? "" : Source.Folder + "/";
+        /// <summary>
+        /// Second line of the row: folder, then the connection the tab last ran against.
+        /// Connection-aware rows make `server:PRD01`-style filtering legible — you can see
+        /// at a glance which environment a hit belongs to.
+        /// </summary>
+        public string Subtitle
+        {
+            get
+            {
+                var parts = new List<string>(2);
+                if (!string.IsNullOrEmpty(Source.Folder)) parts.Add(Source.Folder + "/");
+                var conn = ConnectionShort;
+                if (!string.IsNullOrEmpty(conn)) parts.Add(conn);
+                return string.Join("  ·  ", parts);
+            }
+        }
+
+        private string ConnectionShort
+        {
+            get
+            {
+                var s = (Source.Server ?? "").Trim();
+                var d = (Source.Database ?? "").Trim();
+                if (s.Length == 0 && d.Length == 0) return "";
+                if (s.Length == 0) return d;
+                if (d.Length == 0) return s;
+                return s + "·" + d;
+            }
+        }
 
         public bool HasSubtitle => !string.IsNullOrEmpty(Subtitle);
         public bool HasTags => Tags != null && Tags.Count > 0;
@@ -57,9 +84,11 @@ namespace AutoTabOrganiser.UI.ViewModels
             {
                 var name = Source.Name ?? "(unnamed)";
                 var folder = string.IsNullOrEmpty(Source.Folder) ? "" : "\nFolder: " + Source.Folder;
+                var server = string.IsNullOrEmpty(Source.Server) ? "" : "\nServer: " + Source.Server;
+                var db = string.IsNullOrEmpty(Source.Database) ? "" : "\nDatabase: " + Source.Database;
                 var id = string.IsNullOrEmpty(Source.TabId) ? "" : "\nId: " + Source.TabId;
                 var tags = string.IsNullOrEmpty(Source.TagsCsv) ? "" : "\nTags: " + Source.TagsCsv;
-                return name + folder + tags + id;
+                return name + folder + server + db + tags + id;
             }
         }
 

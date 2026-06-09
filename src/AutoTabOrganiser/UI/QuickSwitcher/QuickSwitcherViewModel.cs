@@ -252,7 +252,10 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                 {
                     var raw = await Task.Run(() => _store.ReadSnapshotContentById(snapshotId), ct).ConfigureAwait(true);
                     if (ct.IsCancellationRequested || seq != _previewLoadSeq) return;
-                    PreviewText = ExtractPreviewLines(raw, 12);
+                    // When the user typed bare search words, centre the preview window on the
+                    // first occurrence so a content (FTS) hit shows the matching lines rather
+                    // than the top of the file.
+                    PreviewText = ExtractPreviewLines(raw, 12, ExtractFindText(_searchText));
                 }
                 catch (OperationCanceledException) { /* superseded */ }
                 catch (Exception ex)
@@ -267,7 +270,7 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
             }
         }
 
-        private static string ExtractPreviewLines(string text, int max)
+        private static string ExtractPreviewLines(string text, int max, string findText = null)
         {
             if (string.IsNullOrEmpty(text)) return "";
             var meta = MetadataParser.Parse(text);
@@ -278,6 +281,22 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
             var lines = body.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             var first = 0;
             while (first < lines.Length && string.IsNullOrWhiteSpace(lines[first])) first++;
+
+            // Content-hit mode: window the preview around the first line containing the
+            // typed text, with a little leading context. Falls through to top-of-body when
+            // the text doesn't appear (e.g. the hit was on name/tag instead of content).
+            if (!string.IsNullOrWhiteSpace(findText))
+            {
+                for (int i = first; i < lines.Length; i++)
+                {
+                    if (lines[i].IndexOf(findText, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    var start = Math.Max(first, i - 3);
+                    var window = lines.Skip(start).Take(max).ToArray();
+                    var prefixNote = start > first ? "… (line " + (i - first + 1) + ")" + Environment.NewLine : "";
+                    return prefixNote + string.Join(Environment.NewLine, window);
+                }
+            }
+
             var taken = lines.Skip(first).Take(max).ToArray();
             return string.Join(Environment.NewLine, taken);
         }

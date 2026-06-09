@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;   // ZipFile + CreateEntryFromFile extension (export archive)
 using System.Linq;
 using System.Text;
 using Microsoft.Data.Sqlite;
@@ -1181,6 +1182,137 @@ CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCAS
                     using (var rd = cmd.ExecuteReader()) while (rd.Read()) tags.Add(rd.GetString(0));
                     return tags;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Tabs flagged open by the previous session. Must be called BEFORE
+        /// <see cref="ClearAllOpenFlags"/> wipes the flags at startup — the package captures
+        /// this list to drive the "Reopen tabs from last session" offer.
+        /// </summary>
+        public List<TabSummary> GetOpenTabs() => ListTabs("is_open=1", null, "ts DESC");
+
+        /// <summary>
+        /// Delete orphaned .sql files under <c>snapshots/</c> — files no snapshot row
+        /// references. Orphans appear when a crash lands between the disk write and the DB
+        /// insert in <see cref="WriteSnapshot"/>, or when DeleteTab's best-effort DB cleanup
+        /// outlived a locked file. Conservative by design: only files older than
+        /// <paramref name="minAge"/> are touched (an in-flight write can never be swept) and
+        /// anything the DB references is never deleted. The referenced-set is read under the
+        /// gate; enumeration and deletion run outside it so snapshot writes aren't blocked.
+        /// </summary>
+        public int SweepOrphanSnapshotFiles(TimeSpan minAge)
+        {
+            var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            lock (_gate)
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "SELECT disk_path FROM snapshots WHERE disk_path IS NOT NULL AND disk_path != '';";
+                    using (var rd = cmd.ExecuteReader())
+                    {
+                        while (rd.Read())
+                        {
+                            var dp = rd.GetString(0);
+                            var full = Path.IsPathRooted(dp) ? dp : Path.Combine(_snapshotsDir, dp);
+                            try { referenced.Add(Path.GetFullPath(full)); } catch { }
+                        }
+                    }
+                }
+            }
+
+            int deleted = 0;
+            var threshold = DateTime.UtcNow - minAge;
+            try
+            {
+                if (!Directory.Exists(_snapshotsDir)) return 0;
+                foreach (var f in Directory.EnumerateFiles(_snapshotsDir, "*.sql", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        if (referenced.Contains(Path.GetFullPath(f))) continue;
+                        if (File.GetLastWriteTimeUtc(f) >= threshold) continue;
+                        File.Delete(f);
+                        deleted++;
+                    }
+                    catch (Exception ex) { _log?.Debug($"Orphan sweep skip {f}: {ex.Message}"); }
+                }
+            }
+            catch (Exception ex) { _log?.Warn("Orphan snapshot-file sweep failed: " + ex.Message); }
+
+            if (deleted > 0)
+                _log?.Info($"Orphan snapshot-file sweep: deleted {deleted} unreferenced file(s) older than {minAge.TotalDays:0}d.");
+            return deleted;
+        }
+
+        /// <summary>Newest pre-migration backup's write time, or null when none exists yet.</summary>
+        public DateTime? GetLastBackupTimeUtc()
+        {
+            try
+            {
+                var dir = Path.Combine(_root, "backups");
+                if (!Directory.Exists(dir)) return null;
+                DateTime? newest = null;
+                foreach (var f in Directory.GetFiles(dir, "index.*.db"))
+                {
+                    var t = File.GetLastWriteTimeUtc(f);
+                    if (newest == null || t > newest.Value) newest = t;
+                }
+                return newest;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Write a portable archive of everything the user would need to rebuild their history
+        /// on another machine: a consistent copy of the index (via VACUUM INTO, safe alongside
+        /// live writers), every on-disk snapshot .sql, and settings.json. Local file I/O only.
+        /// Per-file failures inside snapshots/ are skipped so one locked file can't abort the
+        /// whole export.
+        /// </summary>
+        public void ExportArchive(string destZipPath, string settingsFilePath)
+        {
+            if (string.IsNullOrEmpty(destZipPath)) throw new ArgumentNullException(nameof(destZipPath));
+
+            var tmpDb = Path.Combine(Path.GetTempPath(), "ato-export-" + Guid.NewGuid().ToString("N") + ".db");
+            lock (_gate)
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "VACUUM INTO '" + tmpDb.Replace("'", "''") + "';";
+                    cmd.ExecuteNonQuery();
+                }
+            }
+
+            try
+            {
+                if (File.Exists(destZipPath)) File.Delete(destZipPath);
+                using (var zip = ZipFile.Open(destZipPath, ZipArchiveMode.Create))
+                {
+                    zip.CreateEntryFromFile(tmpDb, "index.db");
+                    if (!string.IsNullOrEmpty(settingsFilePath) && File.Exists(settingsFilePath))
+                    {
+                        try { zip.CreateEntryFromFile(settingsFilePath, "settings.json"); }
+                        catch (Exception ex) { _log?.Warn("Export: settings.json skipped: " + ex.Message); }
+                    }
+                    if (Directory.Exists(_snapshotsDir))
+                    {
+                        foreach (var f in Directory.EnumerateFiles(_snapshotsDir, "*.sql", SearchOption.AllDirectories))
+                        {
+                            try
+                            {
+                                var rel = MakeRelative(_snapshotsDir, f).Replace('\\', '/');
+                                zip.CreateEntryFromFile(f, "snapshots/" + rel);
+                            }
+                            catch (Exception ex) { _log?.Debug($"Export: skipped {f}: {ex.Message}"); }
+                        }
+                    }
+                }
+                _log?.Info("Export archive written: " + destZipPath);
+            }
+            finally
+            {
+                try { File.Delete(tmpDb); } catch { }
             }
         }
 

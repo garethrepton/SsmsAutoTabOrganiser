@@ -25,6 +25,7 @@ namespace AutoTabOrganiser.Editor
         private readonly IWpfTextView _view;
         private readonly DispatcherTimer _debounce;
         private readonly SettingsStore _settings;
+        private readonly EventHandler _onViewClosed;
         private bool _disposed;
 
         public TagStripeMargin(IWpfTextView view, SettingsStore settings)
@@ -43,7 +44,8 @@ namespace AutoTabOrganiser.Editor
 
             _view.TextBuffer.Changed += OnBufferChanged;
             _view.ViewportHeightChanged += OnViewportChanged;
-            _view.Closed += (s, e) => Dispose();
+            _onViewClosed = (s, e) => Dispose();
+            _view.Closed += _onViewClosed;
 
             // First paint after layout is established.
             Loaded += (s, e) => Repaint();
@@ -60,7 +62,14 @@ namespace AutoTabOrganiser.Editor
         private void Repaint()
         {
             if (_disposed) return;
+            // Editor margins repaint inside WPF layout/event dispatch — an exception here
+            // would crash the host, and a margin is never worth that.
+            try { RepaintCore(); }
+            catch { Children.Clear(); }
+        }
 
+        private void RepaintCore()
+        {
             var s = SafeLoadSettings();
             if (s == null || s.Ui == null || !s.Ui.TagStripeEnabled)
             {
@@ -125,6 +134,7 @@ namespace AutoTabOrganiser.Editor
             _disposed = true;
             try { _view.TextBuffer.Changed -= OnBufferChanged; } catch { }
             try { _view.ViewportHeightChanged -= OnViewportChanged; } catch { }
+            try { if (_onViewClosed != null) _view.Closed -= _onViewClosed; } catch { }
             _debounce.Stop();
         }
     }
