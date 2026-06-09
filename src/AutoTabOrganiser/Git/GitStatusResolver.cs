@@ -95,11 +95,19 @@ namespace AutoTabOrganiser.Git
                         try { return p.StandardError.ReadToEnd(); }
                         catch { return string.Empty; }
                     });
-                    var stdout = p.StandardOutput.ReadToEnd();
+                    // stdout must be drained off-thread too: a synchronous ReadToEnd here
+                    // blocks BEFORE WaitForExit, so the 2s kill never engaged while git was
+                    // silently hung — the timeout only worked once output had already ended.
+                    var stdoutTask = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { return p.StandardOutput.ReadToEnd(); }
+                        catch { return string.Empty; }
+                    });
                     if (!p.WaitForExit(2000))
                     {
                         try { p.Kill(); } catch { }
                     }
+                    var stdout = stdoutTask.Wait(500) ? stdoutTask.Result : string.Empty;
                     try { stderrTask.Wait(500); } catch { }
                     foreach (var raw in stdout.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries))
                     {

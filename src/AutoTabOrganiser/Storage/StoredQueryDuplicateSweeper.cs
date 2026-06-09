@@ -45,40 +45,69 @@ namespace AutoTabOrganiser.Storage
         /// <summary>
         /// Runs the sweep. <paramref name="isTabOpen"/> is consulted with each candidate's TabId
         /// to determine winner preference; pass <c>_ =&gt; false</c> if open-state isn't available.
+        /// <paramref name="requiredRoot"/>, when non-null, is a hard deletion boundary: any
+        /// candidate whose resolved path is not under it is excluded from the sweep entirely —
+        /// an unattended deleter must never reach outside the folder it was pointed at.
         /// </summary>
-        public Result Sweep(IEnumerable<Candidate> candidates, Func<string, bool> isTabOpen)
+        public Result Sweep(IEnumerable<Candidate> candidates, Func<string, bool> isTabOpen, string requiredRoot = null)
         {
             var result = new Result();
             if (candidates == null) return result;
 
-            var entries = new List<Entry>();
+            string rootFull = null;
+            if (!string.IsNullOrEmpty(requiredRoot))
+            {
+                try { rootFull = Path.GetFullPath(requiredRoot).TrimEnd('\\', '/') + Path.DirectorySeparatorChar; }
+                catch { rootFull = null; }
+            }
+
+            // Dedupe by resolved full path. Two TabIds can legitimately map to the same
+            // on-disk file (rows are keyed by TabId, not path) — without collapsing them
+            // here, the same file shows up twice in its hash-group, "wins" once and
+            // "loses" once, and File.Delete destroys the only copy. Open-state merges:
+            // if any tab pointing at the path is open, the entry counts as open.
+            var byPath = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
             foreach (var c in candidates)
             {
                 if (string.IsNullOrEmpty(c?.FilePath)) continue;
-                Entry entry;
                 try
                 {
                     if (!File.Exists(c.FilePath)) continue;
-                    var content = File.ReadAllText(c.FilePath);
+                    var full = Path.GetFullPath(c.FilePath);
+
+                    if (rootFull != null && !full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _log?.Debug($"sweep: skipped (outside stored-queries root): {full}");
+                        continue;
+                    }
+
+                    var open = !string.IsNullOrEmpty(c.TabId)
+                               && isTabOpen != null
+                               && isTabOpen(c.TabId);
+
+                    if (byPath.TryGetValue(full, out var existing))
+                    {
+                        existing.IsOpen = existing.IsOpen || open;
+                        continue;
+                    }
+
+                    var content = File.ReadAllText(full);
                     var canonical = MetadataWriter.CanonicalContentForCompare(content);
-                    entry = new Entry
+                    byPath[full] = new Entry
                     {
                         TabId = c.TabId,
-                        Path = c.FilePath,
+                        Path = full,
                         Hash = Hashing.Sha256Hex(canonical),
-                        Mtime = SafeMtime(c.FilePath),
-                        IsOpen = !string.IsNullOrEmpty(c.TabId)
-                                 && isTabOpen != null
-                                 && isTabOpen(c.TabId)
+                        Mtime = SafeMtime(full),
+                        IsOpen = open
                     };
                 }
                 catch (Exception ex)
                 {
                     _log?.Warn($"sweep: read failed {c.FilePath}: {ex.Message}");
-                    continue;
                 }
-                entries.Add(entry);
             }
+            var entries = byPath.Values.ToList();
 
             // Group by canonical-content hash. Singletons are skipped — only ≥2 means duplicates.
             foreach (var group in entries.GroupBy(e => e.Hash, StringComparer.Ordinal))

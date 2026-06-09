@@ -31,6 +31,12 @@ namespace AutoTabOrganiser.Settings
 
         public string FilePath => _file;
 
+        // Set when the last Load could not read or parse the on-disk file. While true,
+        // Mutate refuses to Save — persisting a defaults object on top of a file we never
+        // managed to read would silently wipe the user's entire config (including the
+        // privacy server deny-list). Cleared by the next successful read.
+        private bool _loadFailed;
+
         public AppSettings Load()
         {
             lock (_gate)
@@ -40,25 +46,56 @@ namespace AutoTabOrganiser.Settings
 
                 if (!File.Exists(_file))
                 {
+                    _loadFailed = false;
                     _cached = new AppSettings();
                     SeedExamples(_cached);
                     Save(_cached);
                     return _cached;
                 }
+
+                string json;
                 try
                 {
-                    var json = File.ReadAllText(_file);
-                    _cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts) ?? new AppSettings();
-                    _cachedMtimeUtc = SafeGetWriteTimeUtc(_file);
+                    json = File.ReadAllText(_file);
                 }
                 catch
                 {
+                    // Transient IO failure (file lock, AV scan): serve defaults for this
+                    // call only. Don't cache and don't save — the next Load retries, and
+                    // the user's real file stays untouched.
+                    _loadFailed = true;
+                    return new AppSettings();
+                }
+
+                try
+                {
+                    _cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOpts) ?? new AppSettings();
+                    _cachedMtimeUtc = SafeGetWriteTimeUtc(_file);
+                    _loadFailed = false;
+                }
+                catch
+                {
+                    // Corrupt JSON (typo during a hand-edit, truncated write): preserve the
+                    // user's file aside BEFORE anything can overwrite it, then continue on
+                    // defaults. The .corrupt-* copy is their recovery path.
+                    TryPreserveCorruptFile();
+                    _loadFailed = true;
                     _cached = new AppSettings();
                     _cachedMtimeUtc = SafeGetWriteTimeUtc(_file);
                 }
-                if (BackfillDefaults(_cached)) Save(_cached);
+                if (!_loadFailed && BackfillDefaults(_cached)) Save(_cached);
                 return _cached;
             }
+        }
+
+        private void TryPreserveCorruptFile()
+        {
+            try
+            {
+                var dest = _file + ".corrupt-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+                if (!File.Exists(dest)) File.Copy(_file, dest);
+            }
+            catch { /* best-effort — never let preservation itself break Load */ }
         }
 
         /// <summary>
@@ -168,6 +205,10 @@ namespace AutoTabOrganiser.Settings
                 // their changes and silently lose them.
                 _cached = null;
                 var s = Load();
+                // If that read failed, the object we'd be mutating is a defaults stand-in,
+                // not the user's config. Saving it would wipe their file — losing one
+                // mutation is the far smaller harm.
+                if (_loadFailed) return;
                 mutator(s);
                 Save(s);
             }

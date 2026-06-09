@@ -1059,7 +1059,10 @@ namespace AutoTabOrganiser.UI.ViewModels
                     }
 
                     var fileSweeper = new StoredQueryDuplicateSweeper(_log);
-                    var fileResult = fileSweeper.Sweep(candidates, tabId => openByTabId.Contains(tabId));
+                    // Deletion boundary: the sweep may only ever remove files under the
+                    // configured stored-queries folder, no matter what paths the index holds.
+                    var fileResult = fileSweeper.Sweep(candidates, tabId => openByTabId.Contains(tabId),
+                                                       s?.SavedScripts?.FolderPath);
                     if (fileResult.DuplicatesDeleted > 0)
                     {
                         // Drop sweeped paths from pathByTab so the git-resolve below doesn't
@@ -1550,6 +1553,29 @@ namespace AutoTabOrganiser.UI.ViewModels
                 ? treeFolder
                 : treeFolder + "/" + sanitisedSub;
 
+            // Clobber guard: saving under a name that already belongs to a DIFFERENT query
+            // would silently destroy that file. Same-tab overwrite (re-saving your own
+            // script) stays frictionless.
+            if (File.Exists(targetPath))
+            {
+                var ownPath = LookupOriginalFilePath(t);
+                bool samePath = false;
+                try
+                {
+                    samePath = !string.IsNullOrEmpty(ownPath)
+                               && string.Equals(Path.GetFullPath(ownPath), Path.GetFullPath(targetPath),
+                                                StringComparison.OrdinalIgnoreCase);
+                }
+                catch { }
+                if (!samePath)
+                {
+                    var ok = _confirm?.Invoke("Overwrite existing file",
+                        $"\"{fileName}\" already exists in that folder and belongs to a different query.\n\n" +
+                        "Overwrite it? The existing file's content will be lost.") ?? false;
+                    if (!ok) return;
+                }
+            }
+
             var newContent = MetadataWriter.SetFolder(content, folderForMeta);
             newContent = MetadataWriter.SetFile(newContent, fileName);
             if (!string.IsNullOrEmpty(t.TabId))
@@ -1666,11 +1692,15 @@ namespace AutoTabOrganiser.UI.ViewModels
         private static IEnumerable<string> EnumerateSavableSubfolders(string root)
         {
             if (string.IsNullOrEmpty(root) || !Directory.Exists(root)) yield break;
-            var stack = new Stack<string>();
-            stack.Push(root);
+            // Skip reparse points and cap depth: this runs on the UI thread when the save
+            // panel opens, and a junction loop under the scripts folder would hang SSMS.
+            const int maxDepth = 32;
+            var stack = new Stack<(string dir, int depth)>();
+            stack.Push((root, 0));
             while (stack.Count > 0)
             {
-                var dir = stack.Pop();
+                var (dir, depth) = stack.Pop();
+                if (depth >= maxDepth) continue;
                 IEnumerable<string> children = null;
                 try { children = Directory.EnumerateDirectories(dir); }
                 catch { continue; }
@@ -1678,9 +1708,12 @@ namespace AutoTabOrganiser.UI.ViewModels
                 {
                     var name = Path.GetFileName(sub);
                     if (string.IsNullOrEmpty(name) || name.StartsWith(".")) continue;
+                    bool reparse = false;
+                    try { reparse = (File.GetAttributes(sub) & FileAttributes.ReparsePoint) != 0; } catch { }
+                    if (reparse) continue;
                     var rel = sub.Substring(root.Length).TrimStart('\\', '/').Replace('\\', '/');
                     yield return rel;
-                    stack.Push(sub);
+                    stack.Push((sub, depth + 1));
                 }
             }
         }

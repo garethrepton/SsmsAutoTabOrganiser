@@ -38,9 +38,16 @@
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.522" />
 
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="6.0.36" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.10" />
+    <!-- 2.1.11 bundles SQLite 3.49.1 (fixes CVE-2025-29087/29088 present in 3.46.1).
+         The IncludeSqliteNativeInVsix target below hardcodes this version in the native
+         DLL path — keep them in lockstep or the VSIX silently ships the old native. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.11" />
     <PackageReference Include="Markdig" Version="1.1.3" />
     <PackageReference Include="System.Text.Json" Version="6.0.10" />
+    <!-- Compile-graph-only pin: the VS SDK's transitive MessagePack 2.2.85 carries
+         CVE-2024-48924. Nothing here ships at runtime (SSMS supplies its own copies);
+         this lifts the resolved version so vulnerability scans run clean. -->
+    <PackageReference Include="MessagePack" Version="2.5.187" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
@@ -77,8 +84,8 @@
 
   <Target Name="IncludeSqliteNativeInVsix" AfterTargets="ResolveAssemblyReferences" BeforeTargets="GetCopyToOutputDirectoryItems;BuiltProjectOutputGroup">
     <ItemGroup>
-      <Content Include="$(NuGetPackageRoot)sqlitepclraw.lib.e_sqlite3\2.1.10\runtimes\win-x64\native\e_sqlite3.dll"
-               Condition="Exists('$(NuGetPackageRoot)sqlitepclraw.lib.e_sqlite3\2.1.10\runtimes\win-x64\native\e_sqlite3.dll')">
+      <Content Include="$(NuGetPackageRoot)sqlitepclraw.lib.e_sqlite3\2.1.11\runtimes\win-x64\native\e_sqlite3.dll"
+               Condition="Exists('$(NuGetPackageRoot)sqlitepclraw.lib.e_sqlite3\2.1.11\runtimes\win-x64\native\e_sqlite3.dll')">
         <Link>e_sqlite3.dll</Link>
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         <IncludeInVSIX>true</IncludeInVSIX>

@@ -826,19 +826,27 @@ namespace AutoTabOrganiser
 
         private static System.Collections.Generic.IEnumerable<string> EnumerateSqlFilesSafe(string folder)
         {
-            // Manual recursion so a single inaccessible subdirectory (perms, junction loop)
-            // doesn't abort the whole walk.
-            var stack = new System.Collections.Generic.Stack<string>();
-            stack.Push(folder);
+            // Manual recursion so a single inaccessible subdirectory (perms) doesn't abort
+            // the whole walk. Reparse points (junctions/symlinks) are skipped — following
+            // one can loop forever — and a depth cap backstops anything else pathological.
+            var stack = new System.Collections.Generic.Stack<(string dir, int depth)>();
+            stack.Push((folder, 0));
+            const int maxDepth = 32;
             while (stack.Count > 0)
             {
-                var dir = stack.Pop();
+                var (dir, depth) = stack.Pop();
                 System.Collections.Generic.IEnumerable<string> subs = Array.Empty<string>();
                 System.Collections.Generic.IEnumerable<string> files = Array.Empty<string>();
                 try { subs  = Directory.EnumerateDirectories(dir); } catch { }
                 try { files = Directory.EnumerateFiles(dir, "*.sql"); } catch { }
                 foreach (var f in files) yield return f;
-                foreach (var s in subs) stack.Push(s);
+                if (depth >= maxDepth) continue;
+                foreach (var s in subs)
+                {
+                    bool reparse = false;
+                    try { reparse = (File.GetAttributes(s) & FileAttributes.ReparsePoint) != 0; } catch { }
+                    if (!reparse) stack.Push((s, depth + 1));
+                }
             }
         }
 

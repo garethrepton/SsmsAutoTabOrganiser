@@ -59,11 +59,33 @@ namespace AutoTabOrganiser.Git
         }
 
         /// <summary>
-        /// Escape a value for interpolation inside a double-quoted CLI argument. Windows
-        /// paths can't legally contain '"', but DB-sourced or settings-sourced strings
-        /// aren't filesystem-validated — defence in depth against argument injection.
+        /// Escape a value for interpolation inside a double-quoted CLI argument, following
+        /// MSVCRT parsing rules: backslash runs immediately before a '"' (or before the
+        /// closing quote the caller appends) must be doubled, and the quote itself escaped.
+        /// Without the trailing-run doubling, a commit message ending in '\' eats the
+        /// closing quote and the rest of the command line reparses as extra git arguments.
         /// </summary>
-        public static string EscapeArg(string value) => (value ?? "").Replace("\"", "\\\"");
+        public static string EscapeArg(string value)
+        {
+            value = value ?? "";
+            var sb = new StringBuilder(value.Length + 8);
+            int backslashes = 0;
+            foreach (var c in value)
+            {
+                if (c == '\\') { backslashes++; continue; }
+                if (c == '"')
+                {
+                    sb.Append('\\', backslashes * 2 + 1).Append('"');
+                }
+                else
+                {
+                    sb.Append('\\', backslashes).Append(c);
+                }
+                backslashes = 0;
+            }
+            sb.Append('\\', backslashes * 2); // run abuts the caller's closing quote
+            return sb.ToString();
+        }
 
         public static GitResult Add(string filePath, Logger log)
         {
@@ -120,6 +142,13 @@ namespace AutoTabOrganiser.Git
             return (branch, -1, -1);
         }
 
+        /// <summary>
+        /// Hard ceiling on any git invocation. Local plumbing finishes in milliseconds;
+        /// push (credential manager UI, slow remote) is the long pole. A hung git must
+        /// never freeze SSMS indefinitely — several callers run on the UI thread.
+        /// </summary>
+        private const int RunTimeoutMs = 60_000;
+
         public static GitResult Run(string workingDir, string args, Logger log)
         {
             var result = new GitResult();
@@ -135,21 +164,47 @@ namespace AutoTabOrganiser.Git
                     StandardOutputEncoding = Encoding.UTF8,
                     StandardErrorEncoding = Encoding.UTF8
                 };
+                // No console is attached (CreateNoWindow), so a terminal credential prompt
+                // would hang invisibly until the timeout. Disable it — Git Credential
+                // Manager's own UI is a separate mechanism and still works.
+                psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
+
                 using (var p = Process.Start(psi))
                 {
                     if (p == null) { result.Error = "Failed to start git."; return result; }
-                    var stdout = p.StandardOutput.ReadToEnd();
-                    var stderr = p.StandardError.ReadToEnd();
-                    p.WaitForExit();
+                    // Drain stderr concurrently with stdout: with both pipes redirected, a
+                    // full stderr buffer blocks git, which then can't drain stdout — a
+                    // mutual deadlock. (Same fix GitStatusResolver already carries.)
+                    var stderrTask = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { return p.StandardError.ReadToEnd(); }
+                        catch { return string.Empty; }
+                    });
+                    var stdoutTask = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        try { return p.StandardOutput.ReadToEnd(); }
+                        catch { return string.Empty; }
+                    });
+
+                    if (!p.WaitForExit(RunTimeoutMs))
+                    {
+                        try { p.Kill(); } catch { }
+                        result.Error = $"git timed out after {RunTimeoutMs / 1000}s and was terminated.";
+                        log?.Warn($"git {args} (in {workingDir}) -> timeout, killed.");
+                        return result;
+                    }
                     result.ExitCode = p.ExitCode;
-                    result.StdOut = stdout;
-                    result.StdErr = stderr;
+                    result.StdOut = stdoutTask.Wait(2000) ? stdoutTask.Result : "";
+                    result.StdErr = stderrTask.Wait(2000) ? stderrTask.Result : "";
                 }
 
                 var summary = $"git {args} (in {workingDir})  -> exit {result.ExitCode}";
                 log?.Info(summary);
-                if (!string.IsNullOrWhiteSpace(result.StdOut)) log?.Info(result.StdOut.TrimEnd());
-                if (!string.IsNullOrWhiteSpace(result.StdErr)) log?.Warn(result.StdErr.TrimEnd());
+                // Truncate logged output: diff stdout contains the user's full SQL text, and
+                // logging it verbatim both balloons the daily log and copies query content
+                // into a second location on disk.
+                if (!string.IsNullOrWhiteSpace(result.StdOut)) log?.Info(Truncate(result.StdOut.TrimEnd(), 2000));
+                if (!string.IsNullOrWhiteSpace(result.StdErr)) log?.Warn(Truncate(result.StdErr.TrimEnd(), 2000));
             }
             catch (Exception ex)
             {
@@ -158,6 +213,9 @@ namespace AutoTabOrganiser.Git
             }
             return result;
         }
+
+        private static string Truncate(string s, int max)
+            => s.Length <= max ? s : s.Substring(0, max) + $"… [{s.Length - max} more chars truncated]";
     }
 
     internal sealed class GitResult

@@ -317,7 +317,9 @@ namespace AutoTabOrganiser.UI
             Grid.SetRow(text, 0);
 
             var btnPanel = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            var yes = new Button { Content = "Delete", IsDefault = true, MinWidth = 80, Margin = new Thickness(0, 0, 8, 0) };
+            // Generic affirmative label: this dialog now backs both "Delete from history"
+            // and "Overwrite existing file", so the button can't say "Delete".
+            var yes = new Button { Content = "Confirm", IsDefault = true, MinWidth = 80, Margin = new Thickness(0, 0, 8, 0) };
             var no = new Button { Content = "Cancel", IsCancel = true, MinWidth = 80 };
             btnPanel.Children.Add(yes);
             btnPanel.Children.Add(no);

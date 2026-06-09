@@ -155,6 +155,100 @@ namespace AutoTabOrganiser.Tests
         }
 
         [Fact]
+        public void Sweep_TwoTabsSharingOneFile_NeverDeletesTheSharedFile()
+        {
+            // Two TabIds pointing at the SAME on-disk path is a supported state (rows are
+            // keyed by TabId, not path). The file must never be treated as its own duplicate.
+            var path = WriteFile("shared.sql", MetadataWriter.SetId("SELECT 1;\n", "tab-a"));
+
+            var sweeper = new StoredQueryDuplicateSweeper(_log);
+            var result = sweeper.Sweep(
+                new[]
+                {
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "tab-a", FilePath = path },
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "tab-b", FilePath = path },
+                },
+                isTabOpen: _ => false);
+
+            result.DuplicatesDeleted.Should().Be(0);
+            File.Exists(path).Should().BeTrue("a file shared by two tabs is not a duplicate of itself");
+        }
+
+        [Fact]
+        public void Sweep_SamePathDifferentCasing_TreatedAsOneFile()
+        {
+            var path = WriteFile("cased.sql", MetadataWriter.SetId("SELECT 1;\n", "tab-a"));
+
+            var sweeper = new StoredQueryDuplicateSweeper(_log);
+            var result = sweeper.Sweep(
+                new[]
+                {
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "tab-a", FilePath = path },
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "tab-b", FilePath = path.ToUpperInvariant() },
+                },
+                isTabOpen: _ => false);
+
+            result.DuplicatesDeleted.Should().Be(0);
+            File.Exists(path).Should().BeTrue();
+        }
+
+        [Fact]
+        public void Sweep_FileOutsideRequiredRoot_IsNeverDeleted()
+        {
+            // Genuine duplicates, but one lives outside the stored-queries root — the
+            // boundary must exclude it from the sweep entirely (neither deleted nor
+            // counted as a winner that justifies deleting something else).
+            var insideDir = Path.Combine(_tempDir, "scripts");
+            Directory.CreateDirectory(insideDir);
+            var outsideDir = Path.Combine(_tempDir, "elsewhere");
+            Directory.CreateDirectory(outsideDir);
+
+            var body = "SELECT 42;\n";
+            var insidePath = Path.Combine(insideDir, "in.sql");
+            File.WriteAllText(insidePath, MetadataWriter.SetId(body, "tab-in"));
+            var outsidePath = Path.Combine(outsideDir, "out.sql");
+            File.WriteAllText(outsidePath, MetadataWriter.SetId(body, "tab-out"));
+
+            var sweeper = new StoredQueryDuplicateSweeper(_log);
+            var result = sweeper.Sweep(
+                new[]
+                {
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "tab-in",  FilePath = insidePath },
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "tab-out", FilePath = outsidePath },
+                },
+                isTabOpen: _ => false,
+                requiredRoot: insideDir);
+
+            result.DuplicatesDeleted.Should().Be(0, "the outside file is excluded, leaving a singleton group");
+            File.Exists(insidePath).Should().BeTrue();
+            File.Exists(outsidePath).Should().BeTrue("files outside the root are untouchable");
+        }
+
+        [Fact]
+        public void Sweep_DuplicatesInsideRoot_StillSweptWhenRootSupplied()
+        {
+            var body = "SELECT 7;\n";
+            var aPath = WriteFile("a.sql", MetadataWriter.SetId(body, "a"));
+            var bPath = WriteFile("b.sql", MetadataWriter.SetId(body, "b"));
+            File.SetLastWriteTimeUtc(aPath, DateTime.UtcNow.AddMinutes(-5));
+            File.SetLastWriteTimeUtc(bPath, DateTime.UtcNow);
+
+            var sweeper = new StoredQueryDuplicateSweeper(_log);
+            var result = sweeper.Sweep(
+                new[]
+                {
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "a", FilePath = aPath },
+                    new StoredQueryDuplicateSweeper.Candidate { TabId = "b", FilePath = bPath },
+                },
+                isTabOpen: _ => false,
+                requiredRoot: _tempDir);
+
+            result.DuplicatesDeleted.Should().Be(1);
+            File.Exists(bPath).Should().BeTrue("newer file wins");
+            File.Exists(aPath).Should().BeFalse();
+        }
+
+        [Fact]
         public void Sweep_ThreeWayDuplicate_DeletesTwoLosers()
         {
             var body = "SELECT 99;\n";
