@@ -73,7 +73,11 @@ namespace AutoTabOrganiser.Git
             var map = new Dictionary<string, GitFileStatus>(StringComparer.OrdinalIgnoreCase);
             try
             {
-                var psi = new ProcessStartInfo("git", "status --porcelain -uall")
+                // --no-optional-locks: plain `git status` opportunistically refreshes the
+                // index stat-cache, taking .git/index.lock each run. The tool window watches
+                // the .git dir for changes, so that write made every status call schedule the
+                // next refresh — a feedback loop pinning a refresh every ~150ms forever.
+                var psi = new ProcessStartInfo("git", "--no-optional-locks status --porcelain -uall")
                 {
                     WorkingDirectory = repoRoot,
                     UseShellExecute = false,

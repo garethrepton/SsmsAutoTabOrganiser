@@ -131,6 +131,61 @@ namespace AutoTabOrganiser.Metadata
             return new IdInjection { InsertOffset = 0, InsertedText = sb.ToString() };
         }
 
+        public sealed class IdLineReplacement
+        {
+            public int Start;       // offset of the line's first character
+            public int Length;      // characters to replace (excludes \r and \n)
+            public string NewText;
+        }
+
+        /// <summary>
+        /// Spans of every <c>-- @id:</c> line whose value equals <paramref name="oldId"/>, each
+        /// paired with the replacement text carrying <paramref name="newId"/> — the shape
+        /// ITextEdit.Replace needs, so reassigning a conflicted id (a whole-query copy/paste
+        /// brings the source tab's @id line with it) stays a minimal buffer edit instead of a
+        /// full-text rewrite. Line terminators sit outside the spans and are preserved.
+        /// Empty when either id is blank or no line carries <paramref name="oldId"/>.
+        /// </summary>
+        public static List<IdLineReplacement> ComputeIdLineReplacements(string text, string oldId, string newId)
+        {
+            var result = new List<IdLineReplacement>();
+            text = text ?? string.Empty;
+            oldId = (oldId ?? string.Empty).Trim();
+            newId = (newId ?? string.Empty).Trim();
+            if (oldId.Length == 0 || newId.Length == 0) return result;
+
+            int i = 0, len = text.Length;
+            while (i < len)
+            {
+                int lineStart = i;
+                while (i < len && text[i] != '\n') i++;
+                int contentEnd = i;
+                if (i < len) i++; // consume '\n'
+
+                var raw = text.Substring(lineStart, contentEnd - lineStart);
+                if (raw.EndsWith("\r")) raw = raw.Substring(0, raw.Length - 1);
+                if (!IsIdLineText(raw)) continue;
+                if (!string.Equals(IdLineValue(raw), oldId, StringComparison.Ordinal)) continue;
+
+                result.Add(new IdLineReplacement
+                {
+                    Start = lineStart,
+                    Length = raw.Length,
+                    NewText = "-- @id: " + newId,
+                });
+            }
+            return result;
+        }
+
+        /// <summary>Value of an id line. Caller must have checked <see cref="IsIdLineText"/>.</summary>
+        private static string IdLineValue(string raw)
+        {
+            var rest = raw.TrimStart().Substring(2).TrimStart(); // after "--"
+            rest = rest.Substring(3);                            // after "@id"
+            if (rest.StartsWith(":")) rest = rest.Substring(1);
+            return rest.Trim();
+        }
+
         /// <summary>
         /// Inserts or replaces the leading <c>-- @folder: &lt;folder&gt;</c> line in the document.
         /// Behaviour:

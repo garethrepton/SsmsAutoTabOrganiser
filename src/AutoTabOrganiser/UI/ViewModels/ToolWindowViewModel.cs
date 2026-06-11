@@ -97,6 +97,10 @@ namespace AutoTabOrganiser.UI.ViewModels
         // sweep itself is idempotent.
         private int _sweepInFlight; // 0 = idle, 1 = running
 
+        // Last "Stored queries refresh: …" summary written to the log; identical consecutive
+        // refreshes are not re-logged (the refresh runs on every snapshot write).
+        private string _lastStoredQueriesRefreshLog;
+
         // ---- observable collections ----
         public ObservableCollection<TabRowViewModel> Tabs { get; } = new ObservableCollection<TabRowViewModel>();
         public ObservableCollection<TabRowViewModel> Recent { get; } = new ObservableCollection<TabRowViewModel>();
@@ -581,16 +585,31 @@ namespace AutoTabOrganiser.UI.ViewModels
                     };
                     // Same hard guard as the stored-queries watcher: these fire on a threadpool
                     // thread and an escaping exception would crash SSMS.
+                    //
+                    // *.lock files are transient git-internal artifacts (index.lock, ref locks)
+                    // created even by read-only commands; reacting to them re-triggers the very
+                    // refresh that ran git in the first place. Real state changes always also
+                    // touch a durable file (index, HEAD, refs/*), so skipping locks loses nothing.
                     FileSystemEventHandler onGitChange = (s, e) =>
                     {
-                        try { DebounceStoredQueriesRefresh(); } catch { }
+                        try
+                        {
+                            if (IsGitLockArtifact(e?.Name)) return;
+                            DebounceStoredQueriesRefresh();
+                        }
+                        catch { }
                     };
                     w.Changed += onGitChange;
                     w.Created += onGitChange;
                     w.Deleted += onGitChange;
                     w.Renamed += (s, e) =>
                     {
-                        try { DebounceStoredQueriesRefresh(); } catch { }
+                        try
+                        {
+                            if (IsGitLockArtifact(e?.Name) && IsGitLockArtifact(e?.OldName)) return;
+                            DebounceStoredQueriesRefresh();
+                        }
+                        catch { }
                     };
                     _gitDirWatchers[repo] = w;
                 }
@@ -604,6 +623,10 @@ namespace AutoTabOrganiser.UI.ViewModels
                 _gitDirWatchers.Remove(k);
             }
         }
+
+        /// <summary>True for transient git lock files (index.lock, refs/heads/main.lock, …).</summary>
+        private static bool IsGitLockArtifact(string relativeName)
+            => relativeName != null && relativeName.EndsWith(".lock", StringComparison.OrdinalIgnoreCase);
 
         private void DebounceStoredQueriesRefresh()
         {
@@ -965,8 +988,16 @@ namespace AutoTabOrganiser.UI.ViewModels
                         }
                     }
                 }
-                _log?.Info($"Stored queries refresh: folder='{treeFolder}', tabs={tabs.Count}, with-path={paths.Count}, " +
-                           $"git: modified={modified}, untracked={untracked}, staged={staged}, clean={clean}, notInRepo={notInRepo}, unknown={unknown}");
+                // Only log when the outcome changed — this runs on every snapshot write and
+                // used to repeat an identical line thousands of times per day.
+                var refreshSummary =
+                    $"Stored queries refresh: folder='{treeFolder}', tabs={tabs.Count}, with-path={paths.Count}, " +
+                    $"git: modified={modified}, untracked={untracked}, staged={staged}, clean={clean}, notInRepo={notInRepo}, unknown={unknown}";
+                if (!string.Equals(refreshSummary, _lastStoredQueriesRefreshLog, StringComparison.Ordinal))
+                {
+                    _lastStoredQueriesRefreshLog = refreshSummary;
+                    _log?.Info(refreshSummary);
+                }
 
                 // Branch + ahead/behind for the stored-queries repo — read-only local git
                 // commands (rev-parse / rev-list), no network. log:null keeps the per-refresh

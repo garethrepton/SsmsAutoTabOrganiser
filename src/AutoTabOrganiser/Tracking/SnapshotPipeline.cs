@@ -34,8 +34,17 @@ namespace AutoTabOrganiser.Tracking
         // (tabId, moniker, parsed metadata, server) -> injected?
         private readonly Func<string, string, ParsedMetadata, string, bool> _tryInjectId;
         private readonly Func<List<string>, bool> _tryInjectAutoTags;
+        // (tabId, moniker) -> does another open document already snapshot under this id?
+        private readonly Func<string, string, bool> _isTabIdClaimedElsewhere;
+        // (oldId, newId) -> buffer's @id line rewritten?
+        private readonly Func<string, string, bool> _tryReplaceId;
 
         private string _resolvedTabId;
+        // The file-borne id this pipeline refused because another open tab owns it (whole-query
+        // copy/paste carries the source's @id line along). Non-null until the buffer's @id line
+        // is rewritten to _resolvedTabId or the user changes it themselves.
+        private string _reassignedFromId;
+        private bool _idReassignPending;
         private bool _idInjectionAttempted;
         private string _lastSnapshotHash;
         private long _lastSnapshotTickMs;
@@ -50,7 +59,9 @@ namespace AutoTabOrganiser.Tracking
                                 SnapshotStore store, SettingsStore settings, Logger log,
                                 Action<string> onTabUpdated, Action<string> onTabClosed,
                                 Func<string, string, ParsedMetadata, string, bool> tryInjectId,
-                                Func<List<string>, bool> tryInjectAutoTags)
+                                Func<List<string>, bool> tryInjectAutoTags,
+                                Func<string, string, bool> isTabIdClaimedElsewhere = null,
+                                Func<string, string, bool> tryReplaceId = null)
         {
             _moniker = moniker;
             _getWindowTitle = getWindowTitle;
@@ -61,6 +72,8 @@ namespace AutoTabOrganiser.Tracking
             _onTabClosed = onTabClosed;
             _tryInjectId = tryInjectId;
             _tryInjectAutoTags = tryInjectAutoTags;
+            _isTabIdClaimedElsewhere = isTabIdClaimedElsewhere;
+            _tryReplaceId = tryReplaceId;
         }
 
         /// <summary>
@@ -187,6 +200,16 @@ namespace AutoTabOrganiser.Tracking
                     _tryInjectId?.Invoke(tabId, _moniker, meta, server);
                 }
 
+                // A conflicted id needs the buffer's @id line rewritten to the minted identity —
+                // until that lands the file still names the other tab's id, which would collide
+                // again after a restart. Retried on subsequent snapshots if the buffer wasn't
+                // editable on this attempt; ResolveTabId keeps the identity stable meanwhile.
+                if (_idReassignPending)
+                {
+                    if (_tryReplaceId?.Invoke(_reassignedFromId, tabId) == true)
+                        _idReassignPending = false;
+                }
+
                 // Inject newly-matched auto-tags into the file header (only the ones that aren't
                 // already present). Honours the same "must have a comment block" guard as @id.
                 if (settingsNow.Snapshotting.AutoTagInjectIntoHeader && autoTags.Count > 0)
@@ -210,8 +233,40 @@ namespace AutoTabOrganiser.Tracking
             // mint a fresh GUID-derived id. Fingerprint-based reuse used to live here but
             // collided new untitled tabs whose simple content (e.g. "SELECT 1") happened to
             // hash to the same value as an earlier tab's snapshot.
-            if (!string.IsNullOrEmpty(meta.Id)) { _resolvedTabId = meta.Id; return _resolvedTabId; }
-            if (!string.IsNullOrEmpty(_resolvedTabId)) return _resolvedTabId;
+            if (!string.IsNullOrEmpty(meta.Id))
+            {
+                // Sticky reassignment: the file still carries an id we already refused (the
+                // buffer rewrite hasn't landed yet). Keep our minted identity — flipping back
+                // when the original claimant closes would split this tab's history in two.
+                if (_reassignedFromId != null && string.Equals(meta.Id, _reassignedFromId, StringComparison.Ordinal))
+                    return _resolvedTabId;
+
+                // Whole-query copy/paste carries the source tab's @id line with it. If another
+                // open document already snapshots under this id, mint a fresh identity for this
+                // one — otherwise the two tabs interleave snapshots under a single tab_id and
+                // silently corrupt each other's history.
+                if (_isTabIdClaimedElsewhere != null && _isTabIdClaimedElsewhere(meta.Id, _moniker))
+                {
+                    _reassignedFromId = meta.Id;
+                    if (string.IsNullOrEmpty(_resolvedTabId) || string.Equals(_resolvedTabId, meta.Id, StringComparison.Ordinal))
+                        _resolvedTabId = MetadataWriter.GenerateTabId();
+                    _idReassignPending = true;
+                    _log.Info($"[id conflict] @id {meta.Id} already belongs to another open tab; this tab now snapshots as {_resolvedTabId}");
+                    return _resolvedTabId;
+                }
+
+                _reassignedFromId = null;
+                _idReassignPending = false;
+                _resolvedTabId = meta.Id;
+                return _resolvedTabId;
+            }
+            if (!string.IsNullOrEmpty(_resolvedTabId))
+            {
+                // No id line in the file any more — nothing left to rewrite.
+                _reassignedFromId = null;
+                _idReassignPending = false;
+                return _resolvedTabId;
+            }
             _resolvedTabId = MetadataWriter.GenerateTabId();
             return _resolvedTabId;
         }

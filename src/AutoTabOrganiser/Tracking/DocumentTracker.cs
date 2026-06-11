@@ -174,7 +174,9 @@ namespace AutoTabOrganiser.Tracking
                 moniker, getTitle, _store, _settings, _log,
                 _onTabUpdated, _onTabClosed,
                 tryInjectId: (id, mk, meta, server) => InjectIdAtBufferOnUiThread(docCookie, id, meta, server),
-                tryInjectAutoTags: tags => InjectAutoTagsAtBufferOnUiThread(docCookie, tags));
+                tryInjectAutoTags: tags => InjectAutoTagsAtBufferOnUiThread(docCookie, tags),
+                isTabIdClaimedElsewhere: IsTabIdClaimedByOtherDoc,
+                tryReplaceId: (oldId, newId) => ReplaceIdAtBufferOnUiThread(docCookie, oldId, newId));
 
             // Re-check under the lock: between the pre-check and now, a concurrent caller may
             // have inserted a pipeline for the same cookie. If so, dispose the one we just built
@@ -339,11 +341,8 @@ namespace AutoTabOrganiser.Tracking
                     // line above the @id. Documents backed by a real file keep their first
                     // line untouched — renaming a saved script's panel entry to "New Tab …"
                     // would be worse than no header.
-                    bool realPath;
-                    try { realPath = !string.IsNullOrEmpty(info.Moniker) && Path.IsPathRooted(info.Moniker); }
-                    catch { realPath = false; }
                     string header = null;
-                    if (!realPath)
+                    if (IsUntitledMoniker(info.Moniker))
                     {
                         header = "New Tab " + DateTime.Now.ToString("yyyy-MM-dd HH:mm");
                         if (!string.IsNullOrEmpty(server)) header += " on " + server;
@@ -353,11 +352,65 @@ namespace AutoTabOrganiser.Tracking
                     if (injection == null) return;
                     if (injection.InsertOffset < 0 || injection.InsertOffset > text.Length) return;
                     ApplyInsertPreservingCaret(vsBuf, buffer, injection.InsertOffset, injection.InsertedText);
+                    _log.Info($"[@id injected] {id} into {SafeName(info.Moniker)} header={(header != null)}");
                     ok = true;
                 });
                 return ok;
             }
             catch (Exception ex) { _log.Error("@id injection failed", ex); return false; }
+        }
+
+        /// <summary>
+        /// True when any other tracked open document has resolved the supplied tab id. Each
+        /// pipeline asks this before honouring a file-borne @id, so a whole-query copy/paste
+        /// (the @id line rides along with the copied text) can't interleave its snapshots
+        /// with the original tab's history.
+        /// </summary>
+        private bool IsTabIdClaimedByOtherDoc(string tabId, string moniker)
+        {
+            if (string.IsNullOrEmpty(tabId)) return false;
+            lock (_pipelines)
+            {
+                foreach (var p in _pipelines.Values)
+                {
+                    if (!string.Equals(p.TabId, tabId, StringComparison.Ordinal)) continue;
+                    if (string.Equals(p.Moniker, moniker, StringComparison.OrdinalIgnoreCase)) continue;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Rewrites every <c>-- @id: oldId</c> line in the buffer to carry <paramref name="newId"/>,
+        /// caret preserved. Returns false (so the pipeline retries on a later snapshot) when the
+        /// buffer isn't adaptable or no line carries <paramref name="oldId"/> any more.
+        /// </summary>
+        private bool ReplaceIdAtBufferOnUiThread(uint docCookie, string oldId, string newId)
+        {
+            try
+            {
+                bool ok = false;
+                ThreadHelper.JoinableTaskFactory.Run(async () =>
+                {
+                    await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+                    var info = _rdt.GetDocumentInfo(docCookie);
+                    if (!(info.DocData is IVsTextBuffer vsBuf) || _adapterFactory == null) return;
+                    var buffer = _adapterFactory.GetDocumentBuffer(vsBuf) ?? _adapterFactory.GetDataBuffer(vsBuf);
+                    if (buffer == null) return;
+                    var text = buffer.CurrentSnapshot.GetText();
+                    var replacements = MetadataWriter.ComputeIdLineReplacements(text, oldId, newId);
+                    if (replacements.Count == 0) return;
+                    ApplyEditsPreservingCaret(vsBuf, buffer, edit =>
+                    {
+                        foreach (var r in replacements) edit.Replace(r.Start, r.Length, r.NewText);
+                    });
+                    _log.Info($"[@id reassigned] {oldId} -> {newId} in {SafeName(info.Moniker)}");
+                    ok = true;
+                });
+                return ok;
+            }
+            catch (Exception ex) { _log.Error("@id reassign failed", ex); return false; }
         }
 
         private bool InjectAutoTagsAtBufferOnUiThread(uint docCookie, List<string> tags)
@@ -401,6 +454,9 @@ namespace AutoTabOrganiser.Tracking
         /// to its pre-edit position instead.
         /// </summary>
         private void ApplyInsertPreservingCaret(IVsTextBuffer vsBuf, ITextBuffer buffer, int insertOffset, string insertedText)
+            => ApplyEditsPreservingCaret(vsBuf, buffer, edit => edit.Insert(insertOffset, insertedText));
+
+        private void ApplyEditsPreservingCaret(IVsTextBuffer vsBuf, ITextBuffer buffer, Action<ITextEdit> stage)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
@@ -418,7 +474,7 @@ namespace AutoTabOrganiser.Tracking
 
             using (var edit = buffer.CreateEdit())
             {
-                edit.Insert(insertOffset, insertedText);
+                stage(edit);
                 edit.Apply();
             }
 
@@ -436,6 +492,27 @@ namespace AutoTabOrganiser.Tracking
                     }
                 }
                 catch { /* best-effort */ }
+            }
+        }
+
+        /// <summary>
+        /// True when the moniker belongs to a tab the user never saved: unrooted names, or
+        /// files under %TEMP% — SSMS 22 backs every brand-new query window with a random
+        /// file there (e.g. <c>Temp\mrdq5fad..sql</c>), so path-rootedness alone can't
+        /// distinguish "untitled" from a real saved document.
+        /// </summary>
+        private static bool IsUntitledMoniker(string moniker)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(moniker) || !Path.IsPathRooted(moniker)) return true;
+                var temp = Path.GetFullPath(Path.GetTempPath()).TrimEnd('\\') + '\\';
+                return Path.GetFullPath(moniker).StartsWith(temp, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                // Unparseable path: err on the side of NOT renaming — skip the header.
+                return false;
             }
         }
 

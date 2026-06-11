@@ -132,6 +132,48 @@ namespace AutoTabOrganiser.Tests
             MetadataWriter.ComputeIdInjection("SELECT 1;\n", null, "h").Should().BeNull();
         }
 
+        // ---- ComputeIdLineReplacements (conflicted-id rewrite: copy/paste of a whole query) ----
+
+        [Fact]
+        public void ComputeIdLineReplacements_ReplacesMatchingLine_PreservingCrlf()
+        {
+            var text = "-- header\r\n-- @id: old-id\r\nSELECT 1;\r\n";
+            var reps = MetadataWriter.ComputeIdLineReplacements(text, "old-id", "new-id");
+
+            reps.Should().ContainSingle();
+            reps[0].Start.Should().Be("-- header\r\n".Length);
+            reps[0].Length.Should().Be("-- @id: old-id".Length); // \r stays outside the span
+            reps[0].NewText.Should().Be("-- @id: new-id");
+
+            var applied = text.Substring(0, reps[0].Start) + reps[0].NewText
+                        + text.Substring(reps[0].Start + reps[0].Length);
+            applied.Should().Be("-- header\r\n-- @id: new-id\r\nSELECT 1;\r\n");
+        }
+
+        [Fact]
+        public void ComputeIdLineReplacements_IgnoresOtherIdValues()
+        {
+            var text = "-- @id: somebody-else\nSELECT 1;\n";
+            MetadataWriter.ComputeIdLineReplacements(text, "old-id", "new-id").Should().BeEmpty();
+        }
+
+        [Fact]
+        public void ComputeIdLineReplacements_CoversLeadingAndLegacyTrailingCopies()
+        {
+            var blanks = string.Concat(Enumerable.Repeat("\n", 40));
+            var text = "-- @id: dup\nSELECT 1;\n" + blanks + "-- @id: dup\n";
+            var reps = MetadataWriter.ComputeIdLineReplacements(text, "dup", "fresh");
+            reps.Should().HaveCount(2);
+        }
+
+        [Fact]
+        public void ComputeIdLineReplacements_BlankIds_ReturnEmpty()
+        {
+            MetadataWriter.ComputeIdLineReplacements("-- @id: x\n", "", "y").Should().BeEmpty();
+            MetadataWriter.ComputeIdLineReplacements("-- @id: x\n", "x", " ").Should().BeEmpty();
+            MetadataWriter.ComputeIdLineReplacements(null, "x", "y").Should().BeEmpty();
+        }
+
         // ---- Parser round-trips for every placement ----
 
         [Fact]
