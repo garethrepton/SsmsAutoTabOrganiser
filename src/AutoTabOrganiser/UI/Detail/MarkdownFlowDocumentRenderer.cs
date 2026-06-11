@@ -265,8 +265,14 @@ namespace AutoTabOrganiser.UI.Detail
         {
             try
             {
-                Process.Start(new ProcessStartInfo(e.Uri.ToString()) { UseShellExecute = true });
-                e.Handled = true;
+                // Descriptions can arrive in .sql files from anyone; UseShellExecute on an
+                // arbitrary scheme would invoke whatever handler the URI names (ms-msdt:,
+                // file:, …). Only ever hand http(s) to the browser.
+                var uri = e?.Uri;
+                e.Handled = true; // even when blocked — never let WPF navigate the FlowDocument
+                if (uri == null || !uri.IsAbsoluteUri) return;
+                if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return;
+                Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
             }
             catch
             {
