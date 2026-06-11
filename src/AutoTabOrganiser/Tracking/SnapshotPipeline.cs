@@ -31,7 +31,8 @@ namespace AutoTabOrganiser.Tracking
         private readonly Logger _log;
         private readonly Action<string> _onTabUpdated;
         private readonly Action<string> _onTabClosed;
-        private readonly Func<string, string, ParsedMetadata, bool> _tryInjectId;
+        // (tabId, moniker, parsed metadata, server) -> injected?
+        private readonly Func<string, string, ParsedMetadata, string, bool> _tryInjectId;
         private readonly Func<List<string>, bool> _tryInjectAutoTags;
 
         private string _resolvedTabId;
@@ -48,7 +49,7 @@ namespace AutoTabOrganiser.Tracking
         public SnapshotPipeline(string moniker, Func<string> getWindowTitle,
                                 SnapshotStore store, SettingsStore settings, Logger log,
                                 Action<string> onTabUpdated, Action<string> onTabClosed,
-                                Func<string, string, ParsedMetadata, bool> tryInjectId,
+                                Func<string, string, ParsedMetadata, string, bool> tryInjectId,
                                 Func<List<string>, bool> tryInjectAutoTags)
         {
             _moniker = moniker;
@@ -181,7 +182,9 @@ namespace AutoTabOrganiser.Tracking
                 if (settingsNow.Snapshotting.AutoInjectId && string.IsNullOrEmpty(meta.Id) && !_idInjectionAttempted)
                 {
                     _idInjectionAttempted = true;
-                    _tryInjectId?.Invoke(tabId, _moniker, meta);
+                    // server rides along so a brand-new tab's generated header can name the
+                    // connection it was opened against.
+                    _tryInjectId?.Invoke(tabId, _moniker, meta, server);
                 }
 
                 // Inject newly-matched auto-tags into the file header (only the ones that aren't

@@ -81,10 +81,10 @@ namespace AutoTabOrganiser.Metadata
 
             ExtractTagsFromHeaderComments(text, meta.CommentBlockEndExclusive, meta.Tags);
 
-            // Trailing @id wins over the legacy leading-block @id. MetadataWriter.SetId places
-            // the @id at the bottom of the file (with blank-line padding) so it stays out of
-            // the way of the editing area. For files written by the old writer the @id is
-            // still in the leading block — those round-trip via the loop above.
+            // A trailing @id wins over a leading-block @id. MetadataWriter.SetId now writes
+            // the @id into the leading block (second line), which the loop above reads; but
+            // files written by the old bottom-placement writer still carry a trailing @id —
+            // that one is the id the store knows, so it stays authoritative.
             var trailingId = ScanTrailingId(lines);
             if (!string.IsNullOrEmpty(trailingId)) meta.Id = trailingId;
 

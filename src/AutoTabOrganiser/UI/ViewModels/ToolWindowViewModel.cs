@@ -1078,6 +1078,13 @@ namespace AutoTabOrganiser.UI.ViewModels
 
                 if (_store != null)
                 {
+                    // Collapse index rows whose canonical content is identical (copies that
+                    // differ only by their @id line) — the file sweep above removes the
+                    // duplicate .sql, but without this the loser's tabs_latest row lives on
+                    // and the quick switcher keeps listing both.
+                    try { _store.MergeDuplicateTabRows(); }
+                    catch (Exception ex) { _log?.Warn("duplicate tab-row merge failed: " + ex.Message); }
+
                     try { _store.SweepCrossTabContentDuplicates(); }
                     catch (Exception ex) { _log?.Warn("cross-tab dedup failed: " + ex.Message); }
                 }

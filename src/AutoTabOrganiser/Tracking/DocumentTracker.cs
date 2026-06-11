@@ -7,6 +7,8 @@ using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Editor;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.Text;
+using Microsoft.VisualStudio.Text.Editor;
 using Microsoft.VisualStudio.TextManager.Interop;
 using AutoTabOrganiser.Metadata;
 using AutoTabOrganiser.Settings;
@@ -171,7 +173,7 @@ namespace AutoTabOrganiser.Tracking
             var pipeline = new SnapshotPipeline(
                 moniker, getTitle, _store, _settings, _log,
                 _onTabUpdated, _onTabClosed,
-                tryInjectId: (id, mk, meta) => InjectIdAtBufferOnUiThread(docCookie, id, meta),
+                tryInjectId: (id, mk, meta, server) => InjectIdAtBufferOnUiThread(docCookie, id, meta, server),
                 tryInjectAutoTags: tags => InjectAutoTagsAtBufferOnUiThread(docCookie, tags));
 
             // Re-check under the lock: between the pre-check and now, a concurrent caller may
@@ -315,7 +317,7 @@ namespace AutoTabOrganiser.Tracking
             return null;
         }
 
-        private bool InjectIdAtBufferOnUiThread(uint docCookie, string id, ParsedMetadata meta)
+        private bool InjectIdAtBufferOnUiThread(uint docCookie, string id, ParsedMetadata meta, string server)
         {
             // Best-effort: try the ITextBuffer route. Skip silently if unavailable; @id isn't
             // critical (fingerprint-based identity still works).
@@ -332,15 +334,25 @@ namespace AutoTabOrganiser.Tracking
                     var text = buffer.CurrentSnapshot.GetText();
                     var fresh = MetadataParser.Parse(text);
                     if (!string.IsNullOrEmpty(fresh.Id)) return;
-                    var newText = MetadataWriter.InjectId(text, id);
-                    if (string.IsNullOrEmpty(newText) || newText.Length <= text.Length) return;
-                    using (var edit = buffer.CreateEdit())
+
+                    // Untitled tabs with no comment header get a generated, searchable name
+                    // line above the @id. Documents backed by a real file keep their first
+                    // line untouched — renaming a saved script's panel entry to "New Tab …"
+                    // would be worse than no header.
+                    bool realPath;
+                    try { realPath = !string.IsNullOrEmpty(info.Moniker) && Path.IsPathRooted(info.Moniker); }
+                    catch { realPath = false; }
+                    string header = null;
+                    if (!realPath)
                     {
-                        // Bottom-injection: everything new sits past the original buffer end.
-                        var insertion = newText.Substring(text.Length);
-                        edit.Insert(text.Length, insertion);
-                        edit.Apply();
+                        header = "New Tab " + DateTime.Now.ToString("yyyy-MM-dd HH:mm");
+                        if (!string.IsNullOrEmpty(server)) header += " on " + server;
                     }
+
+                    var injection = MetadataWriter.ComputeIdInjection(text, id, header);
+                    if (injection == null) return;
+                    if (injection.InsertOffset < 0 || injection.InsertOffset > text.Length) return;
+                    ApplyInsertPreservingCaret(vsBuf, buffer, injection.InsertOffset, injection.InsertedText);
                     ok = true;
                 });
                 return ok;
@@ -371,17 +383,88 @@ namespace AutoTabOrganiser.Tracking
                     var injection = AutoTagger.ComputeInjection(text, tags, fresh);
                     if (injection == null) return;
                     if (injection.InsertOffset < 0 || injection.InsertOffset > text.Length) return;
-                    using (var edit = buffer.CreateEdit())
-                    {
-                        edit.Insert(injection.InsertOffset, injection.InsertedText);
-                        edit.Apply();
-                    }
+                    ApplyInsertPreservingCaret(vsBuf, buffer, injection.InsertOffset, injection.InsertedText);
                     _log.Info($"[auto-tag injected] {string.Join(",", tags)} into {SafeName(info.Moniker)}");
                     ok = true;
                 });
                 return ok;
             }
             catch (Exception ex) { _log.Error("auto-tag injection failed", ex); return false; }
+        }
+
+        /// <summary>
+        /// Applies a single-point insertion to the buffer without moving any view's caret.
+        /// The editor's default caret tracking is positive — an insertion exactly at the
+        /// caret pushes it past the inserted text — so injecting the trailing @id while the
+        /// user types at the end of a fresh tab would otherwise drag their cursor 40 blank
+        /// lines down to sit after the @id line. A negative tracking point pins each caret
+        /// to its pre-edit position instead.
+        /// </summary>
+        private void ApplyInsertPreservingCaret(IVsTextBuffer vsBuf, ITextBuffer buffer, int insertOffset, string insertedText)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+
+            var saved = new List<KeyValuePair<ITextView, ITrackingPoint>>();
+            foreach (var view in GetTextViewsForBuffer(vsBuf))
+            {
+                try
+                {
+                    var caret = view.Caret.Position.BufferPosition;
+                    saved.Add(new KeyValuePair<ITextView, ITrackingPoint>(
+                        view, caret.Snapshot.CreateTrackingPoint(caret.Position, PointTrackingMode.Negative)));
+                }
+                catch { /* view mid-teardown — caret restore is best-effort */ }
+            }
+
+            using (var edit = buffer.CreateEdit())
+            {
+                edit.Insert(insertOffset, insertedText);
+                edit.Apply();
+            }
+
+            foreach (var kv in saved)
+            {
+                try
+                {
+                    var view = kv.Key;
+                    if (view.IsClosed) continue;
+                    var restored = kv.Value.GetPoint(view.TextSnapshot);
+                    if (view.Caret.Position.BufferPosition != restored)
+                    {
+                        view.Caret.MoveTo(restored);
+                        view.Caret.EnsureVisible();
+                    }
+                }
+                catch { /* best-effort */ }
+            }
+        }
+
+        private List<ITextView> GetTextViewsForBuffer(IVsTextBuffer vsBuf)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            var views = new List<ITextView>();
+            try
+            {
+                var textManager = (IVsTextManager)_sp.GetService(typeof(SVsTextManager));
+                if (textManager == null || vsBuf == null) return views;
+                if (textManager.EnumViews(vsBuf, out IVsEnumTextViews enumViews) != VSConstants.S_OK || enumViews == null)
+                    return views;
+
+                var batch = new IVsTextView[1];
+                uint fetched = 0;
+                while (enumViews.Next(1, batch, ref fetched) == VSConstants.S_OK && fetched == 1 && batch[0] != null)
+                {
+                    try
+                    {
+                        var wpfView = _adapterFactory.GetWpfTextView(batch[0]);
+                        if (wpfView != null && !wpfView.IsClosed) views.Add(wpfView);
+                    }
+                    catch { /* non-WPF view — nothing to preserve */ }
+                    batch[0] = null;
+                }
+            }
+            catch (Exception ex) { _log.Debug("EnumViews failed: " + ex.Message); }
+            return views;
         }
 
         // ---------- polling ----------

@@ -1171,6 +1171,93 @@ CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCAS
             public string DiskPath;
         }
 
+        /// <summary>
+        /// Collapses duplicate <c>tabs_latest</c> rows: rows whose latest snapshot content
+        /// is canonically identical (@id lines stripped — see
+        /// <see cref="DuplicateTabMergePlanner"/> for why <c>content_hash</c> can't catch
+        /// these) are merged into a single row. Nothing is destroyed: the loser's snapshot
+        /// history is reassigned to the winner, its access_count folds into the winner so
+        /// frecency survives, and only the loser's tabs_latest/FTS rows are removed. Open
+        /// tabs are never merged away. Returns the number of rows collapsed.
+        /// </summary>
+        public int MergeDuplicateTabRows()
+        {
+            lock (_gate)
+            {
+                var rows = new List<DuplicateTabMergePlanner.Row>();
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText =
+                        "SELECT t.tab_id, t.is_open, t.ts, s.content " +
+                        "FROM tabs_latest t JOIN snapshots s ON s.id = t.latest_snapshot_id;";
+                    using (var rd = cmd.ExecuteReader())
+                    {
+                        while (rd.Read())
+                        {
+                            rows.Add(new DuplicateTabMergePlanner.Row
+                            {
+                                TabId   = rd.GetString(0),
+                                IsOpen  = rd.GetInt32(1) != 0,
+                                Ts      = rd.GetInt64(2),
+                                // Legacy rows may have null content (text on disk only);
+                                // the planner skips them — never merge what we can't compare.
+                                Content = rd.IsDBNull(3) ? null : rd.GetString(3),
+                            });
+                        }
+                    }
+                }
+
+                var merges = DuplicateTabMergePlanner.Plan(rows);
+                if (merges.Count == 0) return 0;
+
+                using (var tx = _conn.BeginTransaction())
+                {
+                    foreach (var m in merges)
+                    {
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "UPDATE snapshots SET tab_id=$w WHERE tab_id=$l;";
+                            Add(cmd, "$w", m.WinnerTabId);
+                            Add(cmd, "$l", m.LoserTabId);
+                            cmd.ExecuteNonQuery();
+                        }
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            cmd.CommandText =
+                                "UPDATE tabs_latest SET access_count = access_count + " +
+                                "(SELECT COALESCE(MAX(access_count),0) FROM tabs_latest WHERE tab_id=$l) " +
+                                "WHERE tab_id=$w;";
+                            Add(cmd, "$w", m.WinnerTabId);
+                            Add(cmd, "$l", m.LoserTabId);
+                            cmd.ExecuteNonQuery();
+                        }
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "DELETE FROM tabs_latest WHERE tab_id=$l;";
+                            Add(cmd, "$l", m.LoserTabId);
+                            cmd.ExecuteNonQuery();
+                        }
+                        if (_ftsAvailable)
+                        {
+                            using (var cmd = _conn.CreateCommand())
+                            {
+                                cmd.Transaction = tx;
+                                cmd.CommandText = "DELETE FROM tab_content_fts WHERE tab_id=$l;";
+                                Add(cmd, "$l", m.LoserTabId);
+                                cmd.ExecuteNonQuery();
+                            }
+                        }
+                        _log?.Info($"tab merge: '{m.LoserTabId}' folded into '{m.WinnerTabId}' (identical canonical content).");
+                    }
+                    tx.Commit();
+                }
+                return merges.Count;
+            }
+        }
+
         public List<string> GetAllTags()
         {
             lock (_gate)

@@ -1,25 +1,19 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 
 namespace AutoTabOrganiser.Metadata
 {
     internal static class MetadataWriter
     {
-        /// <summary>
-        /// Minimum number of blank lines between the last non-blank content line and the
-        /// trailing <c>-- @id: …</c> marker. Keeps the id well below the editing area so
-        /// it doesn't show up in normal scrolling.
-        /// </summary>
-        public const int TrailingIdPaddingLines = 40;
-
         public static string GenerateTabId() => Guid.NewGuid().ToString("D");
 
         /// <summary>
-        /// Returns the new full text with <c>-- @id: &lt;value&gt;</c> placed at the bottom of
-        /// the file, separated from the last non-blank content line by at least
-        /// <see cref="TrailingIdPaddingLines"/> blank lines. Any pre-existing <c>-- @id: …</c>
-        /// line (legacy leading-block or trailing) is removed first so the file ends up with
-        /// exactly one canonical trailing @id.
+        /// Returns the new full text with <c>-- @id: &lt;value&gt;</c> placed in the leading
+        /// comment block — second line when a block already exists (the first line stays the
+        /// human-readable header), top of the file otherwise. An @id already in the leading
+        /// block is replaced in place; legacy trailing @id lines (and the blank-line padding
+        /// the old writer left above them) are removed.
         /// </summary>
         /// <remarks>
         /// Returns <paramref name="text"/> unchanged when <paramref name="id"/> is empty.
@@ -27,7 +21,7 @@ namespace AutoTabOrganiser.Metadata
         public static string InjectId(string text, string id) => SetId(text, id);
 
         /// <summary>
-        /// Inserts or replaces the trailing <c>-- @id: &lt;value&gt;</c> line. See
+        /// Inserts or replaces the <c>-- @id: &lt;value&gt;</c> line. See
         /// <see cref="InjectId"/> for the placement contract.
         /// </summary>
         public static string SetId(string text, string id)
@@ -36,9 +30,105 @@ namespace AutoTabOrganiser.Metadata
             id = (id ?? string.Empty).Trim();
             if (id.Length == 0) return text;
 
+            var lines = SplitLinesKeepingTerminators(text);
+
+            // Extent of the leading comment block: contiguous `--` lines from the top.
+            int blockLines = 0;
+            while (blockLines < lines.Count)
+            {
+                var t = StripTerminator(lines[blockLines]).TrimStart();
+                if (t.Length == 0 || !t.StartsWith("--")) break;
+                blockLines++;
+            }
+
+            var idIndices = new List<int>();
+            for (int i = 0; i < lines.Count; i++)
+                if (IsIdLineText(StripTerminator(lines[i]))) idIndices.Add(i);
+
+            // The first @id inside the leading block is the replace target; every other @id
+            // line (legacy trailing placement, duplicates) is removed.
+            int replaceIndex = -1;
+            foreach (var i in idIndices)
+            {
+                if (i < blockLines) { replaceIndex = i; break; }
+            }
+
+            bool removedBeyondBlock = false;
+            for (int k = idIndices.Count - 1; k >= 0; k--)
+            {
+                int i = idIndices[k];
+                if (i == replaceIndex) continue;
+                lines.RemoveAt(i);
+                if (i >= blockLines) removedBeyondBlock = true;
+            }
+
+            // A removed trailing @id leaves the old writer's blank-line padding dangling at
+            // the tail — drop it. Files that never had a trailing @id keep their tail as-is.
+            if (removedBeyondBlock)
+            {
+                while (lines.Count > 0 && StripTerminator(lines[lines.Count - 1]).Trim().Length == 0)
+                    lines.RemoveAt(lines.Count - 1);
+            }
+
+            if (replaceIndex >= 0)
+            {
+                var terminator = lines[replaceIndex].Substring(StripTerminator(lines[replaceIndex]).Length);
+                lines[replaceIndex] = "-- @id: " + id + terminator;
+                return string.Concat(lines);
+            }
+
+            var cleaned = string.Concat(lines);
+            var injection = ComputeIdInjection(cleaned, id, newTabHeader: null);
+            return cleaned.Substring(0, injection.InsertOffset)
+                 + injection.InsertedText
+                 + cleaned.Substring(injection.InsertOffset);
+        }
+
+        public sealed class IdInjection
+        {
+            public int InsertOffset;
+            public string InsertedText;
+        }
+
+        /// <summary>
+        /// Computes the exact (offset, text) insertion that places <c>-- @id: &lt;value&gt;</c>
+        /// into a document that doesn't have one yet — the shape ITextEdit.Insert needs, so the
+        /// buffer injection in DocumentTracker stays a pure insert. When the document starts
+        /// with a comment block the @id goes in as the second line, below the human-readable
+        /// header. When it doesn't, the @id (optionally preceded by a generated
+        /// <paramref name="newTabHeader"/> comment line, so untitled tabs get a searchable
+        /// name) is prepended with a blank-line separator. Returns null when
+        /// <paramref name="id"/> is empty. Callers are responsible for checking the document
+        /// doesn't already carry an @id.
+        /// </summary>
+        public static IdInjection ComputeIdInjection(string text, string id, string newTabHeader)
+        {
+            text = text ?? string.Empty;
+            id = (id ?? string.Empty).Trim();
+            if (id.Length == 0) return null;
+
             var nl = DetectLineEnding(text);
-            var stripped = StripAllIdLines(text);
-            return AppendTrailingId(stripped, id, nl);
+            var idLine = "-- @id: " + id;
+
+            int firstLineEnd = 0;
+            while (firstLineEnd < text.Length && text[firstLineEnd] != '\n') firstLineEnd++;
+            var firstLine = text.Substring(0, firstLineEnd).TrimEnd('\r').TrimStart();
+
+            if (firstLine.StartsWith("--"))
+            {
+                if (firstLineEnd >= text.Length)
+                {
+                    // Lone comment line without a terminator: append below it.
+                    return new IdInjection { InsertOffset = text.Length, InsertedText = nl + idLine + nl };
+                }
+                return new IdInjection { InsertOffset = firstLineEnd + 1, InsertedText = idLine + nl };
+            }
+
+            var sb = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(newTabHeader))
+                sb.Append("-- ").Append(newTabHeader.Trim()).Append(nl);
+            sb.Append(idLine).Append(nl).Append(nl); // blank line separates the header from the query
+            return new IdInjection { InsertOffset = 0, InsertedText = sb.ToString() };
         }
 
         /// <summary>
@@ -144,22 +234,22 @@ namespace AutoTabOrganiser.Metadata
         }
 
         /// <summary>
-        /// Returns <paramref name="text"/> with every <c>-- @id: …</c> line removed AND trailing
-        /// blank lines / whitespace trimmed. Two stored-query files are "exact duplicates" iff
-        /// this canonical form is byte-equal: it lets a new file (with @id padded at the bottom)
-        /// compare equal to a legacy file (with @id in the leading block) when the SQL itself
-        /// is the same.
+        /// Returns <paramref name="text"/> with every <c>-- @id: …</c> line removed AND
+        /// leading/trailing blank lines / whitespace trimmed. Two stored-query files are
+        /// "exact duplicates" iff this canonical form is byte-equal: it lets files compare
+        /// equal regardless of where their @id lives (leading block — which leaves a blank
+        /// separator line at the top once stripped — or the legacy padded-bottom placement)
+        /// when the SQL itself is the same.
         /// </summary>
         public static string CanonicalContentForCompare(string text)
         {
             if (string.IsNullOrEmpty(text)) return string.Empty;
-            return StripAllIdLines(text).TrimEnd('\r', '\n', ' ', '\t');
+            return StripAllIdLines(text).Trim('\r', '\n', ' ', '\t');
         }
 
         /// <summary>
         /// Returns <paramref name="text"/> with every <c>-- @id: …</c> line removed. Used by
-        /// <see cref="SetId"/> to canonicalise: legacy files with a leading @id get it stripped,
-        /// then a fresh trailing @id is appended.
+        /// <see cref="CanonicalContentForCompare"/> so @id placement never affects equality.
         /// </summary>
         private static string StripAllIdLines(string text)
         {
@@ -185,6 +275,11 @@ namespace AutoTabOrganiser.Metadata
         {
             var raw = text.Substring(lineStart, contentEnd - lineStart);
             if (raw.EndsWith("\r")) raw = raw.Substring(0, raw.Length - 1);
+            return IsIdLineText(raw);
+        }
+
+        private static bool IsIdLineText(string raw)
+        {
             var trimmed = raw.TrimStart();
             if (!trimmed.StartsWith("--")) return false;
             var rest = trimmed.Substring(2).TrimStart();
@@ -193,54 +288,26 @@ namespace AutoTabOrganiser.Metadata
             return rest.Length == 3 || rest[3] == ':' || char.IsWhiteSpace(rest[3]);
         }
 
-        /// <summary>
-        /// Appends <c>-- @id: id</c> as a trailing line, ensuring at least
-        /// <see cref="TrailingIdPaddingLines"/> blank lines between the last non-blank content
-        /// line and the new @id line. Existing trailing blank lines are counted toward the
-        /// quota so the padding doesn't keep growing on repeated saves.
-        /// </summary>
-        private static string AppendTrailingId(string text, string id, string nl)
+        /// <summary>Splits into lines, each retaining its own terminator (the last may have none).</summary>
+        private static List<string> SplitLinesKeepingTerminators(string text)
         {
-            int len = text.Length;
-
-            // Find the offset just after the last non-blank line.
-            int lastNonBlankEnd = 0;
-            int trailingBlanks = 0;
-            int i = 0;
+            var lines = new List<string>();
+            int i = 0, len = text.Length;
             while (i < len)
             {
-                int lineStart = i;
+                int start = i;
                 while (i < len && text[i] != '\n') i++;
-                int contentEnd = i;
-                if (i < len) i++; // consume '\n'
-                int lineEndIncl = i;
-
-                var raw = text.Substring(lineStart, contentEnd - lineStart);
-                if (raw.EndsWith("\r")) raw = raw.Substring(0, raw.Length - 1);
-                if (raw.Trim().Length > 0)
-                {
-                    lastNonBlankEnd = lineEndIncl;
-                    trailingBlanks = 0;
-                }
-                else
-                {
-                    trailingBlanks++;
-                }
+                if (i < len) i++; // include '\n'
+                lines.Add(text.Substring(start, i - start));
             }
+            return lines;
+        }
 
-            var sb = new StringBuilder(len + (TrailingIdPaddingLines + 2) * nl.Length + id.Length + 12);
-            sb.Append(text);
-            // If the last content line wasn't terminated, terminate it now. The terminator
-            // doesn't count as a blank line — it just ends the content line.
-            if (len > 0 && text[len - 1] != '\n')
-            {
-                sb.Append(nl);
-            }
-
-            int blanksToAdd = Math.Max(0, TrailingIdPaddingLines - trailingBlanks);
-            for (int k = 0; k < blanksToAdd; k++) sb.Append(nl);
-            sb.Append("-- @id: ").Append(id).Append(nl);
-            return sb.ToString();
+        private static string StripTerminator(string line)
+        {
+            if (line.EndsWith("\n")) line = line.Substring(0, line.Length - 1);
+            if (line.EndsWith("\r")) line = line.Substring(0, line.Length - 1);
+            return line;
         }
 
         public static int LineNumberAtOffset(string text, int offset)
