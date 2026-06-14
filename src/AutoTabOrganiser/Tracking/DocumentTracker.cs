@@ -616,6 +616,53 @@ namespace AutoTabOrganiser.Tracking
             return pipeline?.TabId;
         }
 
+        /// <summary>
+        /// When <paramref name="tabId"/> is already open as a tracked document, brings its
+        /// window frame to the front and returns true — so "open" actions switch to the
+        /// existing tab instead of materialising a duplicate copy. Frames are matched on RDT
+        /// doc cookie rather than file path because two open tabs can legitimately share an
+        /// on-disk path; the pipeline's resolved TabId is the identity that matters.
+        /// Must be called on the UI thread.
+        /// </summary>
+        public bool TryActivateTab(string tabId)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (string.IsNullOrEmpty(tabId)) return false;
+
+            uint cookie = 0;
+            lock (_pipelines)
+            {
+                foreach (var kv in _pipelines)
+                {
+                    if (string.Equals(kv.Value.TabId, tabId, StringComparison.Ordinal)) { cookie = kv.Key; break; }
+                }
+            }
+            if (cookie == 0) return false;
+
+            try
+            {
+                var uiShell = (IVsUIShell)_sp.GetService(typeof(SVsUIShell));
+                if (uiShell == null) return false;
+                if (uiShell.GetDocumentWindowEnum(out IEnumWindowFrames framesEnum) != VSConstants.S_OK || framesEnum == null)
+                    return false;
+
+                var batch = new IVsWindowFrame[1];
+                while (framesEnum.Next(1, batch, out uint fetched) == VSConstants.S_OK && fetched == 1 && batch[0] != null)
+                {
+                    var frame = batch[0];
+                    batch[0] = null;
+                    if (frame.GetProperty((int)__VSFPROPID.VSFPROPID_DocCookie, out object cookieObj) != VSConstants.S_OK)
+                        continue;
+                    uint frameCookie;
+                    try { frameCookie = Convert.ToUInt32(cookieObj); } catch { continue; }
+                    if (frameCookie != cookie) continue;
+                    return frame.Show() == VSConstants.S_OK;
+                }
+            }
+            catch (Exception ex) { _log.Debug($"TryActivateTab({tabId}) failed: {ex.Message}"); }
+            return false;
+        }
+
         private static string SafeName(string moniker)
         {
             try { return Path.GetFileName(moniker) ?? moniker; }

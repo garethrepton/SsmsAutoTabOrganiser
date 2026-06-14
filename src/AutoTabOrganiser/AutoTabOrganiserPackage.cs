@@ -432,7 +432,7 @@ namespace AutoTabOrganiser
         private async Task OpenTabAtTextAsync(string tabId, string findText,
                                               (string server, string database) preActiveConnection)
         {
-            await OpenTabFromHistoryAsync(tabId);
+            var switchedToExisting = await OpenTabFromHistoryAsync(tabId);
 
             // Find-text first so the cursor is positioned even if the connect step throws.
             if (!string.IsNullOrEmpty(findText))
@@ -454,7 +454,9 @@ namespace AutoTabOrganiser
             // Auto-connect: only prompt when the previously-active doc had a connection.
             // SSMS's Query.Connection command opens the Connect dialog pre-populated with
             // the last-used connection (typically the one we want); user clicks Connect.
-            if (!string.IsNullOrEmpty(preActiveConnection.server))
+            // Skipped when we merely switched to an already-open tab — that tab keeps
+            // whatever connection it already has; popping the dialog would just be noise.
+            if (!switchedToExisting && !string.IsNullOrEmpty(preActiveConnection.server))
             {
                 try
                 {
@@ -591,9 +593,24 @@ namespace AutoTabOrganiser
             });
         }
 
-        private async Task OpenTabFromHistoryAsync(string tabId)
+        /// <summary>
+        /// Opens the tab's content in the editor. Returns true when the tab was ALREADY open
+        /// — in that case its existing window is activated instead of materialising a second
+        /// copy of the same query (which would duplicate the TabId across two documents).
+        /// </summary>
+        private async Task<bool> OpenTabFromHistoryAsync(string tabId)
         {
             await JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            try
+            {
+                if (_docTracker != null && _docTracker.TryActivateTab(tabId))
+                {
+                    _log?.Info($"Open request for {tabId}: already open — switched to the existing tab.");
+                    return true;
+                }
+            }
+            catch (Exception ex) { _log?.Debug("Activate-existing-tab check failed: " + ex.Message); }
 
             // If this tab has ever been "Save to scripts"-d, open the on-disk script directly
             // so subsequent edits and Ctrl+S go to the canonical file rather than a scratch
@@ -613,7 +630,7 @@ namespace AutoTabOrganiser
                 {
                     var dte = (EnvDTE.DTE)await GetServiceAsync(typeof(EnvDTE.DTE));
                     dte?.ItemOperations?.OpenFile(saved[0].FilePath);
-                    return;
+                    return false;
                 }
             }
             catch (Exception ex)
@@ -623,8 +640,9 @@ namespace AutoTabOrganiser
 
             var snaps = _store.ListSnapshots("tab_id=$t",
                 new[] { new System.Collections.Generic.KeyValuePair<string, object>("$t", tabId) }, 1);
-            if (snaps.Count == 0) return;
+            if (snaps.Count == 0) return false;
             await OpenSnapshotInNewTabAsync(snaps[0]);
+            return false;
         }
 
         private static string SafeForFile(string s)
