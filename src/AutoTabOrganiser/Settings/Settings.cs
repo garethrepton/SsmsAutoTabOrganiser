@@ -94,7 +94,7 @@ namespace AutoTabOrganiser.Settings
 
         /// <summary>The default Quick Switcher chord, applied by settings backfill when the
         /// field is absent. Kept here so the store and any UI share one source of truth.</summary>
-        public const string DefaultQuickSwitchHotkey = "Ctrl+Shift+Q";
+        public const string DefaultQuickSwitchHotkey = "Ctrl+Shift+;";
     }
 
     internal sealed class AppSettings

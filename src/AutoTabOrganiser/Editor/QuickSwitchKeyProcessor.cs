@@ -44,7 +44,7 @@ namespace AutoTabOrganiser.Editor
         public QuickSwitchKeyProcessorProvider([Import] SVsServiceProvider serviceProvider)
         {
             _serviceProvider = serviceProvider;
-            KeyProcDiagnostics.Log?.Info("[keyproc] provider constructed (MEF export discovered).");
+            KeyProcDiagnostics.Log?.Debug("[keyproc] provider constructed (MEF export discovered).");
         }
 
         public KeyProcessor GetAssociatedProcessor(IWpfTextView wpfTextView)
@@ -65,7 +65,7 @@ namespace AutoTabOrganiser.Editor
             {
                 var ct = wpfTextView?.TextBuffer?.ContentType;
                 var bases = ct == null ? "" : string.Join(",", ct.BaseTypes.Select(b => b.TypeName));
-                KeyProcDiagnostics.Log?.Info($"[keyproc] attached; hotkey='{chord}' parsedKey={key} contentType={ct?.TypeName} bases=[{bases}]");
+                KeyProcDiagnostics.Log?.Debug($"[keyproc] attached; hotkey='{chord}' parsedKey={key} contentType={ct?.TypeName} bases=[{bases}]");
             }
             catch { }
 
@@ -96,7 +96,7 @@ namespace AutoTabOrganiser.Editor
             if (_key != Key.None && args.Key == _key && (Keyboard.Modifiers & ModMask) == _modifiers)
             {
                 bool ok = TryDispatchQuickSwitcher();
-                KeyProcDiagnostics.Log?.Info($"[keyproc] hotkey matched in editor; dispatch result={ok}");
+                KeyProcDiagnostics.Log?.Debug($"[keyproc] hotkey matched in editor; dispatch result={ok}");
                 if (ok) args.Handled = true; // swallow so the editor's own binding (if any) doesn't also run
             }
 
@@ -110,7 +110,7 @@ namespace AutoTabOrganiser.Editor
                 ThreadHelper.ThrowIfNotOnUIThread();
                 if (!(_serviceProvider.GetService(typeof(SUIHostCommandDispatcher)) is IOleCommandTarget dispatcher))
                 {
-                    KeyProcDiagnostics.Log?.Info("[keyproc] SUIHostCommandDispatcher unavailable.");
+                    KeyProcDiagnostics.Log?.Debug("[keyproc] SUIHostCommandDispatcher unavailable.");
                     return false;
                 }
 
@@ -118,12 +118,12 @@ namespace AutoTabOrganiser.Editor
                 int hr = dispatcher.Exec(ref guid, QuickSwitcherCommandId,
                     (uint)OLECMDEXECOPT.OLECMDEXECOPT_DODEFAULT, IntPtr.Zero, IntPtr.Zero);
                 if (hr != VSConstants.S_OK)
-                    KeyProcDiagnostics.Log?.Info($"[keyproc] Exec returned hr=0x{hr:X8}");
+                    KeyProcDiagnostics.Log?.Debug($"[keyproc] Exec returned hr=0x{hr:X8}");
                 return hr == VSConstants.S_OK;
             }
             catch (Exception ex)
             {
-                KeyProcDiagnostics.Log?.Info("[keyproc] dispatch threw: " + ex.Message);
+                KeyProcDiagnostics.Log?.Debug("[keyproc] dispatch threw: " + ex.Message);
                 return false;
             }
         }
