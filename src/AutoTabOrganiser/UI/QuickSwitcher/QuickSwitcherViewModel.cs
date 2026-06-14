@@ -17,7 +17,7 @@ using AutoTabOrganiser.Util;
 namespace AutoTabOrganiser.UI.QuickSwitcher
 {
     /// <summary>
-    /// View-model for the Ctrl+T quick switcher. Lists all tabs (open ones first), filters
+    /// View-model for the Ctrl+; quick switcher. Lists all tabs (open ones first), filters
     /// live as the user types — including FTS5 content matching — and exposes the activation
     /// callback the window invokes on Enter / double-click.
     /// </summary>

@@ -325,6 +325,10 @@ namespace AutoTabOrganiser.UI.ViewModels
         public ICommand ClearSearchCommand { get; }
         public ICommand CloseInfoBarCommand { get; }
 
+        /// <summary>Extension version (e.g. "v0.1.64") read from the deployed VSIX manifest,
+        /// shown muted in the toolbar. Empty when the manifest can't be read.</summary>
+        public string VersionText { get; } = ReadExtensionVersion();
+
         public ICommand OpenTabCommand { get; }
         public ICommand OpenAsNewCommand { get; }
         public ICommand CopyIdCommand { get; }
@@ -1410,6 +1414,28 @@ namespace AutoTabOrganiser.UI.ViewModels
             if (p is TabRowViewModel t) return t.Source;
             if (p is StoredQueryRowViewModel s) return s.Source;
             return null;
+        }
+
+        /// <summary>
+        /// Reads the extension version from the VSIX manifest deployed beside this assembly.
+        /// The assembly's own version is a meaningless 1.0.0.0, so the manifest's
+        /// Identity/@Version is the single source of truth. Best-effort: returns "" if the
+        /// manifest is missing or unreadable.
+        /// </summary>
+        private static string ReadExtensionVersion()
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(typeof(ToolWindowViewModel).Assembly.Location);
+                var manifest = Path.Combine(dir ?? "", "extension.vsixmanifest");
+                if (!File.Exists(manifest)) return "";
+                var doc = System.Xml.Linq.XDocument.Load(manifest);
+                var version = doc.Descendants()
+                                 .FirstOrDefault(e => e.Name.LocalName == "Identity")
+                                 ?.Attribute("Version")?.Value;
+                return string.IsNullOrEmpty(version) ? "" : "v" + version;
+            }
+            catch { return ""; }
         }
 
         private void OpenStorage()

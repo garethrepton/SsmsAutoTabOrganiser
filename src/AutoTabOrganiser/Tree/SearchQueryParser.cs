@@ -62,7 +62,7 @@ namespace AutoTabOrganiser.Tree
         /// </summary>
         /// <param name="includeContentInDefault">
         /// When true, plain (no-prefix) tokens also OR-match against the FTS5 content index.
-        /// Used by the Ctrl+T quick switcher; the side panel keeps the narrower behaviour.
+        /// Used by the Ctrl+; quick switcher; the side panel keeps the narrower behaviour.
         /// </param>
         /// <param name="ftsAvailable">
         /// When false, content matches are silently dropped (the engine reports no FTS5 support).

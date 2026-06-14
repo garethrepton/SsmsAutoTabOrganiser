@@ -49,11 +49,13 @@ namespace AutoTabOrganiser
         private Timer _pruneTimer;
         private EnvDTE.WindowEvents _windowEvents;
         private EnvDTE.DTEEvents _dteEvents;
-        // WPF-level keyboard hook used to *guarantee* Ctrl+T opens the Quick Switcher even
+        // WPF-level keyboard hook used to *guarantee* Ctrl+; opens the Quick Switcher even
         // when the chord overlaps an existing binding owned by another extension in the
         // SSMS editor scope. Installed via InputManager.PreProcessInput which fires before
         // WPF's command routing or the editor's IOleCommandTarget chain sees the keystroke.
-        private System.Windows.Input.PreProcessInputEventHandler _ctrlTPreProcessHook;
+        // Ctrl+; is used instead of Ctrl+T because Ctrl+T is SSMS's built-in Results-to-Text
+        // and punctuation keys can't be reliably bound through VSCT, so the hook owns it.
+        private System.Windows.Input.PreProcessInputEventHandler _quickSwitchPreProcessHook;
         // Set when DTE fires OnBeginShutdown. Read by DocumentTracker to skip the
         // close-snapshot cascade as SSMS tears down each open tab — those snapshots are
         // duplicates of the latest content and just slow down shutdown.
@@ -141,21 +143,21 @@ namespace AutoTabOrganiser
             }
             catch (Exception ex) { _log.Debug("WindowEvents subscribe failed: " + ex.Message); }
 
-            // Global Ctrl+T override. VSCT keybindings can only register at the command-
+            // Global Ctrl+; override. VSCT keybindings can only register at the command-
             // routing layer, which means a more-specific scope (text editor) can shadow
-            // the global binding — if another extension has bound Ctrl+T inside SQL
+            // the global binding — if another extension has bound Ctrl+; inside SQL
             // editors that binding will win at the command-routing level. To guarantee
             // our chord always fires regardless of who else owns it, we install at
             // InputManager.PreProcessInput which runs BEFORE command routing. Best-effort;
-            // if WPF isn't initialised yet the VSCT bindings (Ctrl+Shift+T,
-            // Ctrl+Alt+H,O, etc.) still provide fallbacks.
+            // if WPF isn't initialised yet the VSCT bindings (Ctrl+Alt+O,
+            // Ctrl+Alt+H,O) still provide fallbacks.
             try
             {
-                _ctrlTPreProcessHook = OnPreProcessInputForCtrlT;
-                System.Windows.Input.InputManager.Current.PreProcessInput += _ctrlTPreProcessHook;
-                _log.Info("Ctrl+T global override hook installed.");
+                _quickSwitchPreProcessHook = OnPreProcessInputForQuickSwitch;
+                System.Windows.Input.InputManager.Current.PreProcessInput += _quickSwitchPreProcessHook;
+                _log.Info("Ctrl+; global override hook installed.");
             }
-            catch (Exception ex) { _log.Debug("Ctrl+T global hook install failed: " + ex.Message); }
+            catch (Exception ex) { _log.Debug("Ctrl+; global hook install failed: " + ex.Message); }
 
             ScheduleDailyPrune(appSettings);
 
@@ -219,16 +221,16 @@ namespace AutoTabOrganiser
                     _windowEvents = null;
                     _dteEvents = null;
 
-                    // Detach the WPF Ctrl+T hook before package teardown. If left attached
+                    // Detach the WPF Ctrl+; hook before package teardown. If left attached
                     // when SSMS reloads the extension, the next instance would install a
                     // second handler and Quick Switcher would fire twice per keystroke.
                     try
                     {
-                        if (_ctrlTPreProcessHook != null)
-                            System.Windows.Input.InputManager.Current.PreProcessInput -= _ctrlTPreProcessHook;
+                        if (_quickSwitchPreProcessHook != null)
+                            System.Windows.Input.InputManager.Current.PreProcessInput -= _quickSwitchPreProcessHook;
                     }
                     catch { }
-                    _ctrlTPreProcessHook = null;
+                    _quickSwitchPreProcessHook = null;
 
                     _pruneTimer?.Dispose();
                     _docTracker?.Dispose();
@@ -357,13 +359,13 @@ namespace AutoTabOrganiser
 
         /// <summary>
         /// Fires for every WPF input event before command routing. We watch for the
-        /// PreviewKeyDown stage and match Ctrl+T (no Alt, no Shift). When matched we
+        /// PreviewKeyDown stage and match Ctrl+; (no Alt, no Shift). When matched we
         /// mark the event handled, cancel further input processing, and dispatch the
-        /// Quick Switcher. This is the only reliable way to override a chord that
-        /// another extension has claimed in a more-specific scope — VSCT keybindings
-        /// alone cannot pre-empt the editor's IOleCommandTarget chain.
+        /// Quick Switcher. This is the only reliable way to bind a punctuation chord that
+        /// VSCT keybindings can't express and to pre-empt anything another extension has
+        /// claimed in a more-specific scope (the editor's IOleCommandTarget chain).
         /// </summary>
-        private void OnPreProcessInputForCtrlT(object sender, System.Windows.Input.PreProcessInputEventArgs e)
+        private void OnPreProcessInputForQuickSwitch(object sender, System.Windows.Input.PreProcessInputEventArgs e)
         {
             try
             {
@@ -375,7 +377,8 @@ namespace AutoTabOrganiser
                 // phase fires for the same physical event afterwards; we don't need it
                 // because cancelling at PreProcess suppresses both phases.
                 if (k.RoutedEvent != System.Windows.Input.Keyboard.PreviewKeyDownEvent) return;
-                if (k.Key != System.Windows.Input.Key.T) return;
+                // OemSemicolon is the ';' / ':' key on a US layout.
+                if (k.Key != System.Windows.Input.Key.OemSemicolon) return;
                 var mods = System.Windows.Input.Keyboard.Modifiers;
                 if ((mods & System.Windows.Input.ModifierKeys.Control) == 0) return;
                 if ((mods & System.Windows.Input.ModifierKeys.Alt)   != 0) return;
@@ -385,7 +388,7 @@ namespace AutoTabOrganiser
                 e.Cancel();
                 OnQuickSwitcherInvoked(this, EventArgs.Empty);
             }
-            catch (Exception ex) { _log?.Debug("Ctrl+T preprocess hook failed: " + ex.Message); }
+            catch (Exception ex) { _log?.Debug("Ctrl+; preprocess hook failed: " + ex.Message); }
         }
 
         private void OnQuickSwitcherInvoked(object sender, EventArgs e)
