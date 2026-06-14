@@ -54,21 +54,17 @@
   <KeyBindings>
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="SnapshotNowCommandId"
                 editor="guidVSStd97" key1="H" mod1="Control Alt" key2="S" />
-    <!-- Quick Switcher bindings. The PRIMARY binding (Ctrl+;) is enforced at the WPF
-         InputManager.PreProcessInput layer in AutoTabOrganiserPackage.OnPreProcessInputForQuickSwitch
-         — that hook fires before VS command routing or the editor's IOleCommandTarget
-         chain, so it pre-empts any other extension that may already own the chord in
-         the text-editor scope. Ctrl+; is NOT listed here because VSCT keybindings can't
-         reliably express OEM/punctuation keys; the WPF hook owns it instead. Ctrl+T was
-         dropped — it's SSMS's built-in Results-to-Text and hijacking it fought SSMS and
-         SQL Prompt. The VSCT entries below are the discoverable command-routing fallbacks
-         (they show up in Tools > Options > Environment > Keyboard):
+    <!-- Quick Switcher bindings. The PRIMARY hotkey is now configurable via settings.json
+         (Ui.QuickSwitchHotkey, default Ctrl+Shift+Q) and is delivered by code, not VSCT: the
+         MEF QuickSwitchKeyProcessor handles the in-editor scope (a bound editor command is
+         translated before VSCT/WPF input, so only a per-view KeyProcessor wins there), and
+         AutoTabOrganiserPackage.OnPreProcessInputForQuickSwitch handles the non-editor scope.
+         The two static entries below remain as discoverable, never-shadowed fallbacks (they
+         show up in Tools > Options > Environment > Keyboard):
            - Ctrl+Alt+O: alternate single-chord. SSMS doesn't bind it by default.
            - Ctrl+Alt+H, O: two-chord fallback (matches the Ctrl+Alt+H, S Snapshot Now
              pattern). Two-chord bindings are essentially never claimed by SSMS or any
-             other extension, so this is the *guaranteed* fallback if the WPF hook ever
-             fails to install.
-         All register in the global scope (guidVSStd97). -->
+             other extension. -->
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"
                 editor="guidVSStd97" key1="O" mod1="Control Alt" />
     <KeyBinding guid="guidAutoTabOrganiserCmdSet" id="QuickSwitcherCommandId"

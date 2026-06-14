@@ -49,13 +49,16 @@ namespace AutoTabOrganiser
         private Timer _pruneTimer;
         private EnvDTE.WindowEvents _windowEvents;
         private EnvDTE.DTEEvents _dteEvents;
-        // WPF-level keyboard hook used to *guarantee* Ctrl+; opens the Quick Switcher even
-        // when the chord overlaps an existing binding owned by another extension in the
-        // SSMS editor scope. Installed via InputManager.PreProcessInput which fires before
-        // WPF's command routing or the editor's IOleCommandTarget chain sees the keystroke.
-        // Ctrl+; is used instead of Ctrl+T because Ctrl+T is SSMS's built-in Results-to-Text
-        // and punctuation keys can't be reliably bound through VSCT, so the hook owns it.
+        // WPF-level keyboard hook for the Quick Switcher chord in the NON-editor scope (focus
+        // not in a query window). Installed via InputManager.PreProcessInput, which fires
+        // before WPF command routing. The in-editor scope is the MEF QuickSwitchKeyProcessor;
+        // both read the same Ui.QuickSwitchHotkey setting.
         private System.Windows.Input.PreProcessInputEventHandler _quickSwitchPreProcessHook;
+        // Parsed Quick Switcher chord (from Ui.QuickSwitchHotkey). Drives the non-editor WPF
+        // hook below; the in-editor path is the MEF QuickSwitchKeyProcessor, which reads the
+        // same setting. Key.None means "no in-shell hotkey configured".
+        private System.Windows.Input.ModifierKeys _quickSwitchModifiers;
+        private System.Windows.Input.Key _quickSwitchKey;
         // Set when DTE fires OnBeginShutdown. Read by DocumentTracker to skip the
         // close-snapshot cascade as SSMS tears down each open tab — those snapshots are
         // duplicates of the latest content and just slow down shutdown.
@@ -74,6 +77,13 @@ namespace AutoTabOrganiser
 
             _settings = new SettingsStore(SettingsStore.DefaultSettingsFilePath());
             var appSettings = _settings.Load();
+
+            // Parse the configurable Quick Switcher chord once for the non-editor WPF hook.
+            if (!AutoTabOrganiser.Util.HotkeyChord.TryParse(appSettings.Ui.QuickSwitchHotkey,
+                    out _quickSwitchModifiers, out _quickSwitchKey))
+            {
+                _quickSwitchKey = System.Windows.Input.Key.None;
+            }
 
             var storageRoot = _settings.ResolveStorageLocation();
             Directory.CreateDirectory(storageRoot);
@@ -143,21 +153,22 @@ namespace AutoTabOrganiser
             }
             catch (Exception ex) { _log.Debug("WindowEvents subscribe failed: " + ex.Message); }
 
-            // Global Ctrl+; override. VSCT keybindings can only register at the command-
-            // routing layer, which means a more-specific scope (text editor) can shadow
-            // the global binding — if another extension has bound Ctrl+; inside SQL
-            // editors that binding will win at the command-routing level. To guarantee
-            // our chord always fires regardless of who else owns it, we install at
-            // InputManager.PreProcessInput which runs BEFORE command routing. Best-effort;
-            // if WPF isn't initialised yet the VSCT bindings (Ctrl+Alt+O,
-            // Ctrl+Alt+H,O) still provide fallbacks.
+            // Quick Switcher hotkey, NON-editor scope (tool window, no document focused). The
+            // in-editor scope is handled by the MEF QuickSwitchKeyProcessor — a bound editor
+            // command is translated before WPF input, so a global hook can't win there, which
+            // is why the hotkey must be a chord that's unassigned in the Text Editor scope.
+            // This hook covers the case where focus isn't in the editor. Installed at
+            // InputManager.PreProcessInput, which runs before command routing.
             try
             {
-                _quickSwitchPreProcessHook = OnPreProcessInputForQuickSwitch;
-                System.Windows.Input.InputManager.Current.PreProcessInput += _quickSwitchPreProcessHook;
-                _log.Info("Ctrl+; global override hook installed.");
+                if (_quickSwitchKey != System.Windows.Input.Key.None)
+                {
+                    _quickSwitchPreProcessHook = OnPreProcessInputForQuickSwitch;
+                    System.Windows.Input.InputManager.Current.PreProcessInput += _quickSwitchPreProcessHook;
+                    _log.Info($"Quick Switcher hotkey hook installed for '{appSettings.Ui.QuickSwitchHotkey}'.");
+                }
             }
-            catch (Exception ex) { _log.Debug("Ctrl+; global hook install failed: " + ex.Message); }
+            catch (Exception ex) { _log.Debug("Quick Switcher hotkey hook install failed: " + ex.Message); }
 
             ScheduleDailyPrune(appSettings);
 
@@ -221,7 +232,7 @@ namespace AutoTabOrganiser
                     _windowEvents = null;
                     _dteEvents = null;
 
-                    // Detach the WPF Ctrl+; hook before package teardown. If left attached
+                    // Detach the WPF Quick Switcher hotkey hook before package teardown. If left attached
                     // when SSMS reloads the extension, the next instance would install a
                     // second handler and Quick Switcher would fire twice per keystroke.
                     try
@@ -358,17 +369,16 @@ namespace AutoTabOrganiser
         }
 
         /// <summary>
-        /// Fires for every WPF input event before command routing. We watch for the
-        /// PreviewKeyDown stage and match Ctrl+; (no Alt, no Shift). When matched we
-        /// mark the event handled, cancel further input processing, and dispatch the
-        /// Quick Switcher. This is the only reliable way to bind a punctuation chord that
-        /// VSCT keybindings can't express and to pre-empt anything another extension has
-        /// claimed in a more-specific scope (the editor's IOleCommandTarget chain).
+        /// Fires for every WPF input event before command routing. Matches the configured
+        /// Quick Switcher chord (Ui.QuickSwitchHotkey) at the PreviewKeyDown stage and, when
+        /// matched, marks the event handled and dispatches the Quick Switcher. Covers the
+        /// non-editor scope; the in-editor scope is the MEF QuickSwitchKeyProcessor.
         /// </summary>
         private void OnPreProcessInputForQuickSwitch(object sender, System.Windows.Input.PreProcessInputEventArgs e)
         {
             try
             {
+                if (_quickSwitchKey == System.Windows.Input.Key.None) return;
                 var input = e?.StagingItem?.Input;
                 if (input == null) return;
                 if (!(input is System.Windows.Input.KeyEventArgs k)) return;
@@ -377,18 +387,17 @@ namespace AutoTabOrganiser
                 // phase fires for the same physical event afterwards; we don't need it
                 // because cancelling at PreProcess suppresses both phases.
                 if (k.RoutedEvent != System.Windows.Input.Keyboard.PreviewKeyDownEvent) return;
-                // OemSemicolon is the ';' / ':' key on a US layout.
-                if (k.Key != System.Windows.Input.Key.OemSemicolon) return;
-                var mods = System.Windows.Input.Keyboard.Modifiers;
-                if ((mods & System.Windows.Input.ModifierKeys.Control) == 0) return;
-                if ((mods & System.Windows.Input.ModifierKeys.Alt)   != 0) return;
-                if ((mods & System.Windows.Input.ModifierKeys.Shift) != 0) return;
+                if (k.Key != _quickSwitchKey) return;
+                const System.Windows.Input.ModifierKeys mask =
+                    System.Windows.Input.ModifierKeys.Control | System.Windows.Input.ModifierKeys.Shift |
+                    System.Windows.Input.ModifierKeys.Alt | System.Windows.Input.ModifierKeys.Windows;
+                if ((System.Windows.Input.Keyboard.Modifiers & mask) != _quickSwitchModifiers) return;
 
                 k.Handled = true;
                 e.Cancel();
                 OnQuickSwitcherInvoked(this, EventArgs.Empty);
             }
-            catch (Exception ex) { _log?.Debug("Ctrl+; preprocess hook failed: " + ex.Message); }
+            catch (Exception ex) { _log?.Debug("Quick Switcher hotkey hook failed: " + ex.Message); }
         }
 
         private void OnQuickSwitcherInvoked(object sender, EventArgs e)

@@ -80,6 +80,21 @@ namespace AutoTabOrganiser.Settings
         public bool TagStripeEnabled { get; set; } = true;
         /// <summary>How many tabs to show in the RECENT section. 0 or negative is treated as default (12).</summary>
         public int RecentItemsCount { get; set; } = 12;
+        /// <summary>
+        /// Keyboard chord that opens the Quick Switcher from inside the SQL editor, e.g.
+        /// "Ctrl+Shift+Q". Modifiers (Ctrl/Shift/Alt, any order) plus one key, '+'-separated.
+        /// Pick a chord that's unassigned in SSMS's Text Editor scope (Tools > Options >
+        /// Environment > Keyboard) — a chord already bound to an editor command is translated
+        /// before the extension sees it and won't reach the switcher.
+        /// <para>null (key absent from settings.json) is backfilled to the default on load so
+        /// the field is always written and editable; an explicit "" disables the hotkey (the
+        /// toolbar button and Ctrl+Alt+H,O still work).</para>
+        /// </summary>
+        public string QuickSwitchHotkey { get; set; }
+
+        /// <summary>The default Quick Switcher chord, applied by settings backfill when the
+        /// field is absent. Kept here so the store and any UI share one source of truth.</summary>
+        public const string DefaultQuickSwitchHotkey = "Ctrl+Shift+Q";
     }
 
     internal sealed class AppSettings

@@ -420,7 +420,7 @@
                 </Button>
                 <Button Margin="0,0,2,0" Padding="6,3" MinWidth="0"
                         Background="Transparent" BorderThickness="0"
-                        ToolTip="Quick switcher (Ctrl+; — forced override even if the chord overlaps an existing binding; Ctrl+Alt+O and Ctrl+Alt+H,O also bound)"
+                        ToolTip="Quick switcher (default Ctrl+Shift+Q — configurable via settings.json 'quickSwitchHotkey'; Ctrl+Alt+O and Ctrl+Alt+H,O also bound)"
                         Command="{Binding QuickSwitcherCommand}">
                     <imaging:CrispImage Width="16" Height="16"
                                         Moniker="{x:Static catalog:KnownMonikers.GoToNext}" />

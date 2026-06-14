@@ -49,6 +49,7 @@ namespace AutoTabOrganiser.Settings
                     _loadFailed = false;
                     _cached = new AppSettings();
                     SeedExamples(_cached);
+                    BackfillDefaults(_cached); // write null-defaulted fields (e.g. QuickSwitchHotkey) into the fresh file
                     Save(_cached);
                     return _cached;
                 }
@@ -136,6 +137,9 @@ namespace AutoTabOrganiser.Settings
             }
             if (s.Ui == null) { s.Ui = new UiSettings(); changed = true; }
             if (s.Ui.RecentItemsCount <= 0) { s.Ui.RecentItemsCount = 12; changed = true; }
+            // null = field absent from the file → write the default so it's visible/editable.
+            // An explicit "" is left alone (the user disabling the hotkey).
+            if (s.Ui.QuickSwitchHotkey == null) { s.Ui.QuickSwitchHotkey = UiSettings.DefaultQuickSwitchHotkey; changed = true; }
             return changed;
         }
 
