@@ -69,6 +69,11 @@ namespace AutoTabOrganiser
         private List<TabSummary> _previousSessionTabs;
         private bool _sessionRestoreOffered;
 
+        // Set when SnapshotStore init throws; the tool window shows this instead of silently
+        // no-opping, with the option to rebuild index.db from the on-disk snapshot files.
+        private string _storeInitError;
+        private string _storageRoot;
+
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
             await JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
@@ -86,6 +91,7 @@ namespace AutoTabOrganiser
             }
 
             var storageRoot = _settings.ResolveStorageLocation();
+            _storageRoot = storageRoot;
             Directory.CreateDirectory(storageRoot);
 
             var logsDir = Path.Combine(Path.GetDirectoryName(_settings.FilePath), "logs");
@@ -118,6 +124,9 @@ namespace AutoTabOrganiser
             {
                 _log.Error("SnapshotStore initialisation failed", ex);
                 _log.Error("The Tab Organiser tool window will be empty. Snapshots disabled.");
+                // Remember the failure so the tool window can explain itself and offer the
+                // rebuild-from-disk recovery instead of silently showing nothing.
+                _storeInitError = ex.Message;
                 return;
             }
 
@@ -598,6 +607,13 @@ namespace AutoTabOrganiser
                         WireToolWindow(window.Control);
                         return;
                     }
+                    // Storage init already failed — don't wait out the full 5s; show the
+                    // failure and offer to rebuild the DB from the on-disk snapshot files.
+                    if (_storeInitError != null && window.Control != null)
+                    {
+                        window.Control.ShowStorageFailure(_storeInitError, () => RebuildStoreFromDisk(window));
+                        return;
+                    }
                     await Task.Delay(250);
                 }
                 // Loud-failure path: if 20 × 250ms (~5s) wasn't enough for the store/control to
@@ -605,6 +621,83 @@ namespace AutoTabOrganiser
                 // it from the extension log rather than guessing why buttons don't respond.
                 _log?.Error($"WireToolWindowSafe gave up after 5s — store={(_store == null ? "null" : "ok")}, " +
                             $"control={(window?.Control == null ? "null" : "ok")}. Tool window commands will not function.");
+            });
+        }
+
+        /// <summary>
+        /// Recovery path for a database that failed to open: quarantine the broken index.db
+        /// (rename — never delete), create a fresh store, and re-import history from the
+        /// per-snapshot .sql files on disk. Edit tracking (DocumentTracker etc.) is only wired
+        /// during package init, so the user is told to restart SSMS to resume snapshotting.
+        /// </summary>
+        private void RebuildStoreFromDisk(TabOrganiserToolWindow window)
+        {
+            _ = JoinableTaskFactory.RunAsync(async () =>
+            {
+                bool ok = false;
+                string message = null;
+
+                // File IO + import off the UI thread.
+                await Task.Run(() =>
+                {
+                    string quarantined = null;
+                    var probeRoot = Path.Combine(_storageRoot, "rebuild-probe");
+                    try
+                    {
+                        // Prove SQLite can actually run BEFORE touching the user's database.
+                        // If the original failure was environmental (assembly load, provider
+                        // init), quarantining a healthy index.db would just strand the user's
+                        // history under a scary "corrupt" name — exactly what happened when
+                        // v0.1.74 shipped with an unresolvable SQLitePCLRaw reference.
+                        Directory.CreateDirectory(probeRoot);
+                        new SnapshotStore(probeRoot, _log).Dispose();
+
+                        quarantined = SnapshotStore.QuarantineDatabase(_storageRoot, _log);
+                        var store = new SnapshotStore(_storageRoot, _log);
+                        var imported = store.RebuildFromDiskSnapshots();
+                        _store = store;
+                        _storeInitError = null;
+                        ok = true;
+                        message = $"Rebuilt the database from {imported} snapshot file(s) on disk."
+                                + (quarantined != null ? $"\nThe old database was preserved at:\n{quarantined}" : "")
+                                + "\n\nRestart SSMS to resume snapshotting.";
+                        _log?.Info($"DB rebuild complete: {imported} snapshot(s) imported.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _log?.Error("DB rebuild from disk snapshots failed", ex);
+                        if (quarantined == null)
+                        {
+                            // The probe failed: SQLite itself can't run in this session, so the
+                            // database was never touched and rebuilding cannot help.
+                            message = "Rebuild is not possible: the SQLite engine itself failed to "
+                                    + "load, so the problem is not the database file. "
+                                    + "Your data has not been touched.\n\n" + ex.Message;
+                        }
+                        else
+                        {
+                            message = "Rebuild failed: " + ex.Message;
+                            try
+                            {
+                                SnapshotStore.RestoreQuarantinedDatabase(_storageRoot, quarantined, _log);
+                                message += "\n\nThe original database was put back unchanged.";
+                            }
+                            catch (Exception rex)
+                            {
+                                _log?.Error("Restore of quarantined db failed", rex);
+                                message += $"\n\nThe original database is preserved at:\n{quarantined}";
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        try { if (Directory.Exists(probeRoot)) Directory.Delete(probeRoot, true); }
+                        catch { /* scratch dir; best-effort */ }
+                    }
+                });
+
+                await JoinableTaskFactory.SwitchToMainThreadAsync();
+                window?.Control?.ShowStorageFailureResult(ok, message);
             });
         }
 

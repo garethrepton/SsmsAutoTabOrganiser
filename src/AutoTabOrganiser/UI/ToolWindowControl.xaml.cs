@@ -80,6 +80,70 @@ namespace AutoTabOrganiser.UI
             _vm.Initialise(sortMode);
         }
 
+        // ---- storage-failure recovery UI ----
+
+        private TextBlock _storageFailureText;
+        private Button _storageFailureRebuildButton;
+
+        /// <summary>
+        /// Replace the normal UI with a storage-failure notice and a "Rebuild database"
+        /// action. Shown when the SQLite index failed to open at startup; the normal VM is
+        /// never constructed in that state, so the whole Content is swapped rather than
+        /// overlaid. <paramref name="rebuild"/> runs on the UI thread when clicked.
+        /// </summary>
+        public void ShowStorageFailure(string error, Action rebuild)
+        {
+            var panel = new StackPanel
+            {
+                Margin = new Thickness(16),
+                VerticalAlignment = VerticalAlignment.Center,
+                MaxWidth = 420
+            };
+            panel.Children.Add(new TextBlock
+            {
+                Text = "Tab history could not be loaded",
+                FontWeight = FontWeights.SemiBold,
+                FontSize = 14,
+                Margin = new Thickness(0, 0, 0, 8),
+                TextWrapping = TextWrapping.Wrap
+            });
+            _storageFailureText = new TextBlock
+            {
+                Text = "The snapshot database failed to open:\n\n" + (error ?? "unknown error")
+                     + "\n\nYou can rebuild the database from the snapshot files on disk. "
+                     + "The existing database file will be renamed and kept, not deleted.",
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.85,
+                Margin = new Thickness(0, 0, 0, 12)
+            };
+            panel.Children.Add(_storageFailureText);
+            _storageFailureRebuildButton = new Button
+            {
+                Content = "Rebuild database from disk snapshots",
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Padding = new Thickness(10, 6, 10, 6)
+            };
+            _storageFailureRebuildButton.Click += (s, e) =>
+            {
+                _storageFailureRebuildButton.IsEnabled = false;
+                _storageFailureText.Text = "Rebuilding from disk snapshots…";
+                try { rebuild?.Invoke(); }
+                catch (Exception ex) { ShowStorageFailureResult(false, "Rebuild failed: " + ex.Message); }
+            };
+            panel.Children.Add(_storageFailureRebuildButton);
+
+            Content = panel;
+        }
+
+        /// <summary>Update the storage-failure panel after a rebuild attempt finishes.</summary>
+        public void ShowStorageFailureResult(bool success, string message)
+        {
+            if (_storageFailureText == null) return;
+            _storageFailureText.Text = message ?? (success ? "Rebuild complete." : "Rebuild failed.");
+            if (_storageFailureRebuildButton != null)
+                _storageFailureRebuildButton.IsEnabled = !success; // allow retry only on failure
+        }
+
         // ---- public surface used by the package ----
 
         public Func<SnapshotRecord, Task> OpenSnapshotHandler { get; set; }

@@ -39,7 +39,18 @@ namespace AutoTabOrganiser.Storage
             _log = log;
             Directory.CreateDirectory(_snapshotsDir);
             EnsureSqliteProvider();
-            OpenAndMigrate();
+            try
+            {
+                OpenAndMigrate();
+            }
+            catch
+            {
+                // A half-opened connection would keep index.db locked and block the
+                // quarantine/rebuild recovery path — release it before surfacing the failure.
+                try { _conn?.Dispose(); } catch { }
+                _conn = null;
+                throw;
+            }
             BackfillContentFts();
             BackfillDiskSnapshots();
         }
@@ -116,6 +127,23 @@ namespace AutoTabOrganiser.Storage
 
         private static string CurrentAssemblyVersion()
         {
+            // The VSIX manifest's Identity/@Version is the real release number; the CLR
+            // assembly version is pinned at 1.0.0.0 across releases, so comparing it can
+            // never detect an upgrade and the pre-migration backup would never fire.
+            try
+            {
+                var dir = Path.GetDirectoryName(typeof(SnapshotStore).Assembly.Location);
+                var manifest = Path.Combine(dir ?? "", "extension.vsixmanifest");
+                if (File.Exists(manifest))
+                {
+                    var doc = System.Xml.Linq.XDocument.Load(manifest);
+                    var v = doc.Descendants()
+                               .FirstOrDefault(e => e.Name.LocalName == "Identity")
+                               ?.Attribute("Version")?.Value;
+                    if (!string.IsNullOrEmpty(v)) return v;
+                }
+            }
+            catch { /* fall through to assembly version */ }
             try { return typeof(SnapshotStore).Assembly.GetName().Version?.ToString() ?? "unknown"; }
             catch { return "unknown"; }
         }
@@ -256,6 +284,264 @@ namespace AutoTabOrganiser.Storage
                 }
             }
             catch (Exception ex) { _log?.Debug("Prune backups failed: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Rename a broken <c>index.db</c> (and its -wal/-shm sidecars) out of the way so a
+        /// fresh database can be created in its place. Never deletes anything — recovery must
+        /// not destroy data. Sidecars move first: a stale -wal left beside a new index.db
+        /// would be replayed into it by SQLite. Returns the quarantined main-db path, or null
+        /// when there was no database file to move.
+        /// </summary>
+        public static string QuarantineDatabase(string storageRoot, Logger log)
+        {
+            var dbPath = Path.Combine(storageRoot, "index.db");
+            if (!File.Exists(dbPath)) return null;
+
+            // Pooled connections (Microsoft.Data.Sqlite pools by default) can hold the file
+            // handle even after the failed store instance was disposed.
+            try { SqliteConnection.ClearAllPools(); } catch { }
+
+            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+            var target = Path.Combine(storageRoot, $"index.corrupt-{stamp}.db");
+            foreach (var suffix in new[] { "-wal", "-shm" })
+            {
+                var sidecar = dbPath + suffix;
+                if (File.Exists(sidecar)) File.Move(sidecar, target + suffix);
+            }
+            File.Move(dbPath, target);
+            log?.Info($"Corrupt database quarantined to '{target}'.");
+            return target;
+        }
+
+        /// <summary>
+        /// Undo <see cref="QuarantineDatabase"/>: move the quarantined files back to
+        /// <c>index.db</c>. Used when the rebuild that followed the quarantine fails —
+        /// leaving the original database renamed would strand the user's history for no
+        /// benefit. Any partially-created replacement db is set aside (renamed, not
+        /// deleted) first.
+        /// </summary>
+        public static void RestoreQuarantinedDatabase(string storageRoot, string quarantinedPath, Logger log)
+        {
+            var dbPath = Path.Combine(storageRoot, "index.db");
+            try { SqliteConnection.ClearAllPools(); } catch { }
+
+            if (File.Exists(dbPath))
+            {
+                var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
+                var aside = Path.Combine(storageRoot, $"index.failed-rebuild-{stamp}.db");
+                foreach (var suffix in new[] { "-wal", "-shm" })
+                    if (File.Exists(dbPath + suffix)) File.Move(dbPath + suffix, aside + suffix);
+                File.Move(dbPath, aside);
+                log?.Warn($"Partially-built replacement db set aside at '{aside}'.");
+            }
+
+            foreach (var suffix in new[] { "-wal", "-shm" })
+                if (File.Exists(quarantinedPath + suffix)) File.Move(quarantinedPath + suffix, dbPath + suffix);
+            File.Move(quarantinedPath, dbPath);
+            log?.Info($"Quarantined database restored to '{dbPath}'.");
+        }
+
+        /// <summary>
+        /// Repopulate the database from the per-snapshot .sql files under <c>snapshots\</c>.
+        /// Tab identity, tags, name and connection come from each file's leading comment block
+        /// (<c>-- @id:</c>, <c>-- #tag</c>, …); the snapshot timestamp comes from the file's
+        /// last write time. Files whose <c>disk_path</c> is already referenced by a row are
+        /// skipped, so the import is idempotent. Snapshots with no <c>@id</c> header are
+        /// grouped into one tab per name — the best signal available without the index.
+        /// Returns the number of snapshots imported.
+        /// </summary>
+        public int RebuildFromDiskSnapshots()
+        {
+            var imported = new List<SnapshotRecord>();
+            var contentById = new Dictionary<string, string>();
+
+            string[] files;
+            try { files = Directory.GetFiles(_snapshotsDir, "*.sql", SearchOption.AllDirectories); }
+            catch (Exception ex)
+            {
+                _log?.Warn("Rebuild: snapshot folder scan failed: " + ex.Message);
+                return 0;
+            }
+
+            foreach (var file in files)
+            {
+                try
+                {
+                    var content = File.ReadAllText(file, Encoding.UTF8);
+                    var meta = AutoTabOrganiser.Metadata.MetadataParser.Parse(content);
+
+                    // Filename shape is "{shortid}_{name}.sql"; the name part is the fallback
+                    // when the content has no @name/first-line metadata.
+                    var fn = Path.GetFileNameWithoutExtension(file);
+                    var us = fn.IndexOf('_');
+                    var fileNamePart = us > 0 && us < fn.Length - 1 ? fn.Substring(us + 1) : fn;
+                    var name = !string.IsNullOrWhiteSpace(meta.Name) ? meta.Name : fileNamePart;
+
+                    var tabId = !string.IsNullOrWhiteSpace(meta.Id)
+                        ? meta.Id
+                        : Hashing.Sha256Hex("rebuild:" + name.ToLowerInvariant()).Substring(0, 32);
+
+                    var rel = file.StartsWith(_snapshotsDir, StringComparison.OrdinalIgnoreCase)
+                        ? file.Substring(_snapshotsDir.Length).TrimStart('\\', '/')
+                        : file;
+
+                    var r = new SnapshotRecord
+                    {
+                        Id = Guid.NewGuid().ToString("N"),
+                        TabId = tabId,
+                        Folder = meta.Folder,
+                        Name = name,
+                        ContentHash = Hashing.Sha256Hex(content),
+                        ContentSize = Encoding.UTF8.GetByteCount(content),
+                        DiskPath = rel,
+                        Reason = "rebuild",
+                        Ts = new DateTimeOffset(File.GetLastWriteTimeUtc(file)).ToUnixTimeMilliseconds(),
+                        Server = meta.Server,
+                        Database = meta.Database,
+                        Desc = meta.Description,
+                        Tags = meta.Tags,
+                    };
+                    imported.Add(r);
+                    contentById[r.Id] = content;
+                }
+                catch (Exception ex)
+                {
+                    _log?.Warn($"Rebuild: skipped '{file}': {ex.Message}");
+                }
+            }
+
+            if (imported.Count == 0) return 0;
+            imported.Sort((a, b) => a.Ts.CompareTo(b.Ts));
+
+            int written = 0;
+            lock (_gate)
+            {
+                using (var tx = _conn.BeginTransaction())
+                {
+                    // Latest record per tab, plus per-tab snapshot count for access_count.
+                    var latestPerTab = new Dictionary<string, SnapshotRecord>(StringComparer.Ordinal);
+                    var countPerTab = new Dictionary<string, int>(StringComparer.Ordinal);
+
+                    foreach (var r in imported)
+                    {
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            cmd.CommandText = "SELECT 1 FROM snapshots WHERE disk_path=$dp LIMIT 1;";
+                            Add(cmd, "$dp", r.DiskPath);
+                            if (cmd.ExecuteScalar() != null) continue;
+                        }
+
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            cmd.CommandText =
+                                "INSERT INTO snapshots(id, tab_id, file_path, folder, name, content_hash, content_size, disk_path, content, reason, ts, server, database) " +
+                                "VALUES($id,$tab,$fp,$fld,$nm,$ch,$cs,$dp,$ct,$r,$ts,$sv,$db);";
+                            Add(cmd, "$id", r.Id);
+                            Add(cmd, "$tab", r.TabId);
+                            Add(cmd, "$fp", r.FilePath);
+                            Add(cmd, "$fld", r.Folder);
+                            Add(cmd, "$nm", r.Name);
+                            Add(cmd, "$ch", r.ContentHash);
+                            Add(cmd, "$cs", r.ContentSize);
+                            Add(cmd, "$dp", r.DiskPath);
+                            Add(cmd, "$ct", contentById[r.Id]);
+                            Add(cmd, "$r", r.Reason);
+                            Add(cmd, "$ts", r.Ts);
+                            Add(cmd, "$sv", r.Server);
+                            Add(cmd, "$db", r.Database);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        if (r.Tags != null && r.Tags.Count > 0)
+                        {
+                            using (var cmd = _conn.CreateCommand())
+                            {
+                                cmd.Transaction = tx;
+                                cmd.CommandText = "INSERT OR IGNORE INTO snapshot_tags(snapshot_id, tag) VALUES($sid,$tag);";
+                                var pSid = cmd.CreateParameter(); pSid.ParameterName = "$sid"; cmd.Parameters.Add(pSid);
+                                var pTag = cmd.CreateParameter(); pTag.ParameterName = "$tag"; cmd.Parameters.Add(pTag);
+                                foreach (var tag in r.Tags)
+                                {
+                                    pSid.Value = r.Id;
+                                    pTag.Value = tag;
+                                    cmd.ExecuteNonQuery();
+                                }
+                            }
+                        }
+
+                        written++;
+                        latestPerTab[r.TabId] = r; // ts-ascending order → last write wins
+                        countPerTab.TryGetValue(r.TabId, out var n);
+                        countPerTab[r.TabId] = n + 1;
+                    }
+
+                    foreach (var kv in latestPerTab)
+                    {
+                        var r = kv.Value;
+                        var tagsCsv = r.Tags == null || r.Tags.Count == 0 ? null : string.Join(",", r.Tags);
+                        using (var cmd = _conn.CreateCommand())
+                        {
+                            cmd.Transaction = tx;
+                            // is_open=0: rebuilt tabs are history, not live documents. Only
+                            // update an existing row when this import is at least as recent.
+                            cmd.CommandText =
+                                "INSERT INTO tabs_latest(tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database, access_count, last_activated_ts) " +
+                                "VALUES($tab,$sid,$fld,$nm,$tg,$ts,0,0,$dsc,$sv,$db,$cnt,$ts) " +
+                                "ON CONFLICT(tab_id) DO UPDATE SET " +
+                                "  latest_snapshot_id=excluded.latest_snapshot_id, " +
+                                "  folder=excluded.folder, " +
+                                "  name=excluded.name, " +
+                                "  tags_csv=excluded.tags_csv, " +
+                                "  ts=excluded.ts, " +
+                                "  desc=excluded.desc, " +
+                                "  server=excluded.server, " +
+                                "  database=excluded.database, " +
+                                "  access_count=MAX(tabs_latest.access_count, excluded.access_count), " +
+                                "  last_activated_ts=MAX(tabs_latest.last_activated_ts, excluded.ts) " +
+                                "WHERE excluded.ts >= tabs_latest.ts;";
+                            Add(cmd, "$tab", r.TabId);
+                            Add(cmd, "$sid", r.Id);
+                            Add(cmd, "$fld", r.Folder);
+                            Add(cmd, "$nm", r.Name);
+                            Add(cmd, "$tg", tagsCsv);
+                            Add(cmd, "$ts", r.Ts);
+                            Add(cmd, "$dsc", r.Desc);
+                            Add(cmd, "$sv", r.Server);
+                            Add(cmd, "$db", r.Database);
+                            countPerTab.TryGetValue(r.TabId, out var cnt);
+                            Add(cmd, "$cnt", cnt);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        if (_ftsAvailable)
+                        {
+                            using (var cmd = _conn.CreateCommand())
+                            {
+                                cmd.Transaction = tx;
+                                cmd.CommandText = "DELETE FROM tab_content_fts WHERE tab_id = $tab;";
+                                Add(cmd, "$tab", r.TabId);
+                                cmd.ExecuteNonQuery();
+                            }
+                            using (var cmd = _conn.CreateCommand())
+                            {
+                                cmd.Transaction = tx;
+                                cmd.CommandText = "INSERT INTO tab_content_fts(tab_id, content) VALUES($tab, $content);";
+                                Add(cmd, "$tab", r.TabId);
+                                Add(cmd, "$content", contentById[r.Id]);
+                                cmd.ExecuteNonQuery();
+                            }
+                        }
+                    }
+
+                    tx.Commit();
+                }
+            }
+
+            _log?.Info($"Rebuild from disk: imported {written} snapshot(s) across {files.Length} file(s).");
+            return written;
         }
 
         /// <summary>
