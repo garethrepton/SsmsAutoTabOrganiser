@@ -38,16 +38,26 @@
     <PackageReference Include="Community.VisualStudio.Toolkit.17" Version="17.0.522" />
 
     <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="6.0.36" />
-    <!-- 2.1.11 bundles SQLite 3.49.1 (fixes CVE-2025-29087/29088 present in 3.46.1).
-         The IncludeSqliteNativeInVsix target below hardcodes this version in the native
-         DLL path — keep them in lockstep or the VSIX silently ships the old native. -->
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.11" />
+    <!-- 3.0.3 pulls SourceGear.sqlite3 3.50.4.5 = SQLite 3.50.4 (fixes CVE-2025-6965,
+         present in the 3.49.1 that SQLitePCLRaw 2.1.11 shipped). In the 3.x line the
+         native library comes from SourceGear.sqlite3 (versioned by SQLite version, not
+         SQLitePCLRaw version). The IncludeSqliteNativeInVsix target below hardcodes that
+         version in the native DLL path — keep them in lockstep or the VSIX silently
+         ships the old native.
+         Runtime note: the VSIX has never carried the managed SQLitePCLRaw assemblies —
+         SSMS 22 supplies its own (3.0.2 + SQLite 3.50.4 under PublicAssemblies\SQLite)
+         and its resolver binds them version-blind (the old 2.1.11-compiled refs already
+         ran against SSMS's 3.0.x in production). This bump aligns our compile refs with
+         the 3.x line SSMS actually loads; also smoke-tested standalone (FTS5/WAL harness,
+         redirects disabled) in case SSMS's copies ever go away. -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageReference Include="Markdig" Version="1.1.3" />
     <PackageReference Include="System.Text.Json" Version="6.0.10" />
     <!-- Compile-graph-only pin: the VS SDK's transitive MessagePack 2.2.85 carries
-         CVE-2024-48924. Nothing here ships at runtime (SSMS supplies its own copies);
-         this lifts the resolved version so vulnerability scans run clean. -->
-    <PackageReference Include="MessagePack" Version="2.5.187" ExcludeAssets="runtime" />
+         CVE-2024-48924 (and 2.5.187 carries CVE-2026-48109/48506). Nothing here ships at
+         runtime (SSMS supplies its own copies); this lifts the resolved version so
+         vulnerability scans run clean. -->
+    <PackageReference Include="MessagePack" Version="2.5.301" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
@@ -82,10 +92,15 @@
     </Content>
   </ItemGroup>
 
+  <!-- SourceGear.sqlite3's props error on AnyCPU because the package can't pick a native
+       architecture by itself. We pick win-x64 explicitly in IncludeSqliteNativeInVsix
+       below (SSMS is 64-bit only), so neutralise the guard with an empty override. -->
+  <Target Name="CheckForAnyCPU" />
+
   <Target Name="IncludeSqliteNativeInVsix" AfterTargets="ResolveAssemblyReferences" BeforeTargets="GetCopyToOutputDirectoryItems;BuiltProjectOutputGroup">
     <ItemGroup>
-      <Content Include="$(NuGetPackageRoot)sqlitepclraw.lib.e_sqlite3\2.1.11\runtimes\win-x64\native\e_sqlite3.dll"
-               Condition="Exists('$(NuGetPackageRoot)sqlitepclraw.lib.e_sqlite3\2.1.11\runtimes\win-x64\native\e_sqlite3.dll')">
+      <Content Include="$(NuGetPackageRoot)sourcegear.sqlite3\3.50.4.5\runtimes\win-x64\native\e_sqlite3.dll"
+               Condition="Exists('$(NuGetPackageRoot)sourcegear.sqlite3\3.50.4.5\runtimes\win-x64\native\e_sqlite3.dll')">
         <Link>e_sqlite3.dll</Link>
         <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         <IncludeInVSIX>true</IncludeInVSIX>
