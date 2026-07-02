@@ -641,6 +641,7 @@ namespace AutoTabOrganiser
                 await Task.Run(() =>
                 {
                     string quarantined = null;
+                    bool probeOk = false;
                     var probeRoot = Path.Combine(_storageRoot, "rebuild-probe");
                     try
                     {
@@ -651,6 +652,7 @@ namespace AutoTabOrganiser
                         // v0.1.74 shipped with an unresolvable SQLitePCLRaw reference.
                         Directory.CreateDirectory(probeRoot);
                         new SnapshotStore(probeRoot, _log).Dispose();
+                        probeOk = true;
 
                         quarantined = SnapshotStore.QuarantineDatabase(_storageRoot, _log);
                         var store = new SnapshotStore(_storageRoot, _log);
@@ -666,13 +668,21 @@ namespace AutoTabOrganiser
                     catch (Exception ex)
                     {
                         _log?.Error("DB rebuild from disk snapshots failed", ex);
-                        if (quarantined == null)
+                        if (!probeOk)
                         {
                             // The probe failed: SQLite itself can't run in this session, so the
                             // database was never touched and rebuilding cannot help.
                             message = "Rebuild is not possible: the SQLite engine itself failed to "
                                     + "load, so the problem is not the database file. "
                                     + "Your data has not been touched.\n\n" + ex.Message;
+                        }
+                        else if (quarantined == null)
+                        {
+                            // QuarantineDatabase threw (it rolls back its own partial moves)
+                            // or there was no index.db to move — either way the original
+                            // files are still in place under their normal names.
+                            message = "Rebuild failed while preparing the database: " + ex.Message
+                                    + "\n\nThe existing database was left in place.";
                         }
                         else
                         {

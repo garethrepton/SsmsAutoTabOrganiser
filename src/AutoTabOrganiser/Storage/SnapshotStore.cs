@@ -304,12 +304,29 @@ namespace AutoTabOrganiser.Storage
 
             var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss");
             var target = Path.Combine(storageRoot, $"index.corrupt-{stamp}.db");
+            var movedSidecars = new List<string>();
             foreach (var suffix in new[] { "-wal", "-shm" })
             {
                 var sidecar = dbPath + suffix;
-                if (File.Exists(sidecar)) File.Move(sidecar, target + suffix);
+                if (!File.Exists(sidecar)) continue;
+                File.Move(sidecar, target + suffix);
+                movedSidecars.Add(suffix);
             }
-            File.Move(dbPath, target);
+            try
+            {
+                File.Move(dbPath, target);
+            }
+            catch
+            {
+                // Roll the sidecars back so a partial failure can never separate the db
+                // from its uncommitted WAL — that pairing is what makes the data whole.
+                foreach (var suffix in movedSidecars)
+                {
+                    try { File.Move(target + suffix, dbPath + suffix); }
+                    catch (Exception rex) { log?.Error($"Quarantine rollback of '{suffix}' failed", rex); }
+                }
+                throw;
+            }
             log?.Info($"Corrupt database quarantined to '{target}'.");
             return target;
         }
@@ -336,9 +353,29 @@ namespace AutoTabOrganiser.Storage
                 log?.Warn($"Partially-built replacement db set aside at '{aside}'.");
             }
 
+            var restoredSidecars = new List<string>();
             foreach (var suffix in new[] { "-wal", "-shm" })
-                if (File.Exists(quarantinedPath + suffix)) File.Move(quarantinedPath + suffix, dbPath + suffix);
-            File.Move(quarantinedPath, dbPath);
+            {
+                if (!File.Exists(quarantinedPath + suffix)) continue;
+                File.Move(quarantinedPath + suffix, dbPath + suffix);
+                restoredSidecars.Add(suffix);
+            }
+            try
+            {
+                File.Move(quarantinedPath, dbPath);
+            }
+            catch
+            {
+                // Same rollback as QuarantineDatabase: never leave a WAL stranded at the
+                // live path without its db — a later fresh index.db would sit next to a
+                // foreign WAL, which SQLite would invalidate.
+                foreach (var suffix in restoredSidecars)
+                {
+                    try { File.Move(dbPath + suffix, quarantinedPath + suffix); }
+                    catch (Exception rex) { log?.Error($"Restore rollback of '{suffix}' failed", rex); }
+                }
+                throw;
+            }
             log?.Info($"Quarantined database restored to '{dbPath}'.");
         }
 
