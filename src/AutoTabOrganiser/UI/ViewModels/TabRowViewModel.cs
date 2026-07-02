@@ -95,6 +95,17 @@ namespace AutoTabOrganiser.UI.ViewModels
         public bool IsOpen => Source.IsOpen;
         public bool IsDirty => Source.IsDirty;
 
+        /// <summary>Bare search terms to bold in the title. Quick Switcher only; null elsewhere.</summary>
+        public IList<string> HighlightTerms { get; set; }
+
+        /// <summary>1-based Ctrl+N jump hint. Quick Switcher sets it on the first nine rows.</summary>
+        public string ShortcutHint { get; set; }
+        public bool HasShortcutHint => !string.IsNullOrEmpty(ShortcutHint);
+        public string ShortcutTooltip => HasShortcutHint ? "Ctrl+" + ShortcutHint : null;
+
+        /// <summary>Compact "5m" — how recently the user focused or edited the tab.</summary>
+        public string ActivityTimeText => RelativeTime.Format(Source.EffectiveActivatedTs);
+
         /// <summary>Compact "edited Xm" — driven by the latest snapshot of any reason.</summary>
         public string LastEditedText => "edited " + RelativeTime.Format(Source.Ts);
 

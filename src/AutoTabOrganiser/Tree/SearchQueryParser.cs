@@ -84,8 +84,10 @@ namespace AutoTabOrganiser.Tree
                 switch (t.Field)
                 {
                     case "tag":
-                        clause = "EXISTS (SELECT 1 FROM snapshot_tags st WHERE st.snapshot_id = tabs_latest.latest_snapshot_id AND st.tag = " + pname + ")";
-                        pars.Add(new KeyValuePair<string, object>(pname, t.Value));
+                        // Prefix match, not equality: "#pro" finds prod, projections... —
+                        // nobody remembers their exact tag vocabulary mid-search.
+                        clause = "EXISTS (SELECT 1 FROM snapshot_tags st WHERE st.snapshot_id = tabs_latest.latest_snapshot_id AND st.tag LIKE " + pname + " COLLATE NOCASE)";
+                        pars.Add(new KeyValuePair<string, object>(pname, Like(t.Value) + "%"));
                         break;
                     case "name":
                         clause = "(name LIKE " + pname + " COLLATE NOCASE)";

@@ -7,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Threading;
+using AutoTabOrganiser.Editor;
 using AutoTabOrganiser.Metadata;
 using AutoTabOrganiser.Settings;
 using AutoTabOrganiser.Storage;
@@ -29,6 +30,7 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
         private readonly SettingsStore _settings;
         private readonly Logger _log;
         private readonly Func<string, string, Task> _openTabAtText;
+        private readonly string _currentTabId;
         private DispatcherTimer _debounce;
 
         public ObservableCollection<TabRowViewModel> Results { get; } = new ObservableCollection<TabRowViewModel>();
@@ -42,6 +44,7 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                 if (_searchText == value) return;
                 _searchText = value ?? "";
                 Notify();
+                UpdateTagSuggestions();
                 DebounceRefresh();
             }
         }
@@ -77,13 +80,120 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
         public string StatusText { get => _statusText; private set { if (_statusText == value) return; _statusText = value; Notify(); } }
 
         public QuickSwitcherViewModel(SnapshotStore store, SettingsStore settings, Logger log,
-                                      Func<string, string, Task> openTabAtText)
+                                      Func<string, string, Task> openTabAtText, string currentTabId = null)
         {
             _store = store;
             _settings = settings;
             _log = log;
             _openTabAtText = openTabAtText;
+            _currentTabId = currentTabId;
+            LoadTagCounts();
             Refresh();
+        }
+
+        // ---- tag autocomplete ----
+
+        public ObservableCollection<TagSuggestion> TagSuggestions { get; } = new ObservableCollection<TagSuggestion>();
+
+        private bool _hasTagSuggestions;
+        public bool HasTagSuggestions
+        {
+            get => _hasTagSuggestions;
+            private set { if (_hasTagSuggestions == value) return; _hasTagSuggestions = value; Notify(); }
+        }
+
+        private List<KeyValuePair<string, int>> _allTagCounts;
+        private IDictionary<string, string> _tagColourOverrides;
+
+        // async void: same crash-guard pattern as Refresh.
+        private async void LoadTagCounts()
+        {
+            try
+            {
+                var counts = await Task.Run(() => _store.GetTagCounts()).ConfigureAwait(true);
+                _allTagCounts = counts;
+                UpdateTagSuggestions(); // the user may already be mid-"#..." by the time this lands
+            }
+            catch (Exception ex)
+            {
+                try { _log?.Error("QuickSwitcher tag-count load failed", ex); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// The trailing token of the input when it is a tag term still being typed:
+        /// (everything before it, the tag prefix as typed ("#", "-#", "tag:", "-tag:"),
+        /// the partial tag text). Null when the caret isn't in a tag token.
+        /// </summary>
+        private static (string head, string prefix, string partial)? ActiveTagToken(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
+            if (char.IsWhiteSpace(text[text.Length - 1])) return null; // token already finished
+            int i = text.Length;
+            while (i > 0 && !char.IsWhiteSpace(text[i - 1])) i--;
+            var token = text.Substring(i);
+            var head = text.Substring(0, i);
+            var neg = token.StartsWith("-") ? "-" : "";
+            var t = neg.Length > 0 ? token.Substring(1) : token;
+            if (t.StartsWith("#")) return (head, neg + "#", t.Substring(1));
+            if (t.StartsWith("tag:", StringComparison.OrdinalIgnoreCase)) return (head, neg + t.Substring(0, 4), t.Substring(4));
+            return null;
+        }
+
+        private void UpdateTagSuggestions()
+        {
+            TagSuggestions.Clear();
+            var tok = ActiveTagToken(_searchText);
+            if (tok == null || _allTagCounts == null || _allTagCounts.Count == 0)
+            {
+                HasTagSuggestions = false;
+                return;
+            }
+
+            if (_tagColourOverrides == null)
+                try { _tagColourOverrides = _settings?.Load()?.Ui?.TagColours; } catch { }
+
+            var partial = tok.Value.partial;
+            foreach (var kv in _allTagCounts) // already most-used-first
+            {
+                if (partial.Length > 0 && !kv.Key.StartsWith(partial, StringComparison.OrdinalIgnoreCase)) continue;
+                TagSuggestions.Add(new TagSuggestion(
+                    new TagChip(kv.Key, TagColourResolver.Resolve(kv.Key, _tagColourOverrides)), kv.Value));
+                if (TagSuggestions.Count >= 12) break; // one strip row-ish; typing narrows further
+            }
+            HasTagSuggestions = TagSuggestions.Count > 0;
+        }
+
+        /// <summary>Replace the tag token being typed with <paramref name="s"/>, keeping the
+        /// prefix style the user chose (#/tag:, negated or not). Trailing space finishes the
+        /// token, which also dismisses the strip.</summary>
+        public void AcceptTagSuggestion(TagSuggestion s)
+        {
+            if (s == null) return;
+            var tok = ActiveTagToken(_searchText);
+            SearchText = tok == null
+                ? (_searchText ?? "").TrimEnd() + (string.IsNullOrWhiteSpace(_searchText) ? "" : " ") + "#" + s.Text + " "
+                : tok.Value.head + tok.Value.prefix + s.Text + " ";
+        }
+
+        /// <summary>Tab-key path: accept the top suggestion. Returns false when the strip is
+        /// not showing so the caller can leave the keystroke alone.</summary>
+        public bool AcceptFirstTagSuggestion()
+        {
+            if (!HasTagSuggestions || TagSuggestions.Count == 0) return false;
+            AcceptTagSuggestion(TagSuggestions[0]);
+            return true;
+        }
+
+        /// <summary>Row-chip click path: append <paramref name="tag"/> as a #filter unless the
+        /// query already carries it.</summary>
+        public void AddTagFilter(string tag)
+        {
+            if (string.IsNullOrEmpty(tag)) return;
+            var term = "#" + tag;
+            var current = _searchText ?? "";
+            if (current.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0) return;
+            SearchText = string.IsNullOrWhiteSpace(current) ? term + " " : current.TrimEnd() + " " + term + " ";
         }
 
         /// <summary>Move selection by <paramref name="delta"/> rows, clamped to the list bounds.</summary>
@@ -104,6 +214,14 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
             var tabId = s.Source?.TabId;
             if (string.IsNullOrEmpty(tabId)) return; // defensive: bogus row, nothing to open
             _ = _openTabAtText?.Invoke(tabId, ExtractFindText(_searchText));
+        }
+
+        /// <summary>Ctrl+1..9 path: jump straight to the row at <paramref name="index"/>.</summary>
+        public void ActivateIndex(int index)
+        {
+            if (index < 0 || index >= Results.Count) return;
+            Selected = Results[index];
+            ActivateSelected();
         }
 
         /// <summary>
@@ -160,7 +278,7 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
 
                 try
                 {
-                    var rows = await Task.Run(() =>
+                    var (rows, bare) = await Task.Run(() =>
                     {
                         ct.ThrowIfCancellationRequested();
                         var query = SearchQueryParser.Parse(input);
@@ -169,10 +287,42 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                             query, nowMs,
                             includeContentInDefault: true,
                             ftsAvailable: _store.FtsAvailable);
-                        // Frecency ordering: currently-open tabs first; then by access_count
-                        // (how often the user has touched this tab); then by recency. A tab the
-                        // user opens daily ranks above a tab they touched once last week.
-                        return _store.ListTabs(where, pars, "is_open DESC, access_count DESC, ts DESC");
+                        // MRU baseline: last focused/edited first (alt-tab semantics — the tab
+                        // you just left sits at #2 even if something below it is still open).
+                        // last_activated_ts is 0 on rows predating activation tracking, so MAX
+                        // falls back to the snapshot time.
+                        const string mruOrder = "MAX(last_activated_ts, ts) DESC, is_open DESC, access_count DESC";
+                        var list = _store.ListTabs(where, pars, mruOrder);
+
+                        var bareTerms = query.Terms
+                            .Where(t => !t.Negate && t.Field == null)
+                            .Select(t => t.Value)
+                            .Where(v => !string.IsNullOrWhiteSpace(v))
+                            .ToList();
+
+                        if (bareTerms.Count > 0)
+                        {
+                            // Fuzzy union: LIKE/FTS can't see subsequence hits ("cusord" →
+                            // CustomerOrders), so re-query with only the field/negation terms
+                            // and fuzzy-match names client-side, then rank everything by how
+                            // well it matched.
+                            var fieldQuery = new SearchQuery();
+                            foreach (var t in query.Terms.Where(t => t.Field != null || t.Negate))
+                                fieldQuery.Terms.Add(t);
+                            var (w2, p2) = SearchQueryParser.ToSql(
+                                fieldQuery, nowMs,
+                                includeContentInDefault: false,
+                                ftsAvailable: _store.FtsAvailable);
+                            var have = new HashSet<string>(list.Select(t => t.TabId));
+                            foreach (var c in _store.ListTabs(w2, p2, mruOrder))
+                            {
+                                if (have.Contains(c.TabId)) continue;
+                                if (bareTerms.TrueForAll(b => QuickSwitchRanker.FuzzyMatches(c.Name, b)))
+                                    list.Add(c);
+                            }
+                            list = QuickSwitchRanker.Rank(list, bareTerms);
+                        }
+                        return (list, bareTerms);
                     }, ct).ConfigureAwait(true);
 
                     if (ct.IsCancellationRequested) return;
@@ -180,11 +330,23 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                     var overrides = _settings?.Load()?.Ui?.TagColours;
                     Results.Clear();
                     foreach (var t in rows.Take(200))
-                        Results.Add(new TabRowViewModel(t, overrides));
-                    Selected = Results.FirstOrDefault();
+                    {
+                        var row = new TabRowViewModel(t, overrides);
+                        if (bare.Count > 0) row.HighlightTerms = bare;
+                        if (Results.Count < 9) row.ShortcutHint = (Results.Count + 1).ToString();
+                        Results.Add(row);
+                    }
+
+                    // Alt-tab reflex: with no query the top row is the tab the user is already
+                    // in — pre-select the row below so open → Enter flips to the previous tab.
+                    if (string.IsNullOrWhiteSpace(input) && Results.Count > 1
+                        && _currentTabId != null && Results[0].Source?.TabId == _currentTabId)
+                        Selected = Results[1];
+                    else
+                        Selected = Results.FirstOrDefault();
 
                     StatusText = string.IsNullOrEmpty(input)
-                        ? $"{Results.Count} tab(s)"
+                        ? $"{Results.Count} tab(s), most recent first"
                         : $"{Results.Count} match(es)";
                 }
                 catch (OperationCanceledException) { /* superseded by a fresher search */ }
@@ -292,6 +454,9 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                     if (lines[i].IndexOf(findText, StringComparison.OrdinalIgnoreCase) < 0) continue;
                     var start = Math.Max(first, i - 3);
                     var window = lines.Skip(start).Take(max).ToArray();
+                    // Mark the hit line so the eye lands on it instantly (the window gives it
+                    // at most 3 lines of leading context, so it's always inside `window`).
+                    window[i - start] = "▶ " + window[i - start];
                     var prefixNote = start > first ? "… (line " + (i - first + 1) + ")" + Environment.NewLine : "";
                     return prefixNote + string.Join(Environment.NewLine, window);
                 }

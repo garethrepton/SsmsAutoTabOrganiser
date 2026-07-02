@@ -96,6 +96,12 @@ namespace AutoTabOrganiser.Storage
             // recent ones. Defaults to 0 on legacy rows; WriteSnapshot increments it per snapshot.
             EnsureColumn("tabs_latest", "access_count", "INTEGER NOT NULL DEFAULT 0");
 
+            // last_activated_ts is the true MRU signal: bumped every time the user focuses the
+            // tab (TouchActivated), not just when they edit. ts can't serve this — it tracks
+            // snapshots, so a tab merely *looked at* never moves. 0 on legacy rows; readers
+            // fall back to ts via MAX(last_activated_ts, ts).
+            EnsureColumn("tabs_latest", "last_activated_ts", "INTEGER NOT NULL DEFAULT 0");
+
             EnsureIndexes();
 
             EnsureFtsTable();
@@ -455,9 +461,11 @@ namespace AutoTabOrganiser.Storage
                         // access_count: starts at 1 on first snapshot for a tab; on update, bump
                         // the existing count by 1. This is the frecency signal the Quick Switcher
                         // sorts by — hot tabs surface above merely-recent ones.
+                        // last_activated_ts also advances here: an edit implies the tab has
+                        // focus, and it keeps MRU sane for sessions predating TouchActivated.
                         cmd.CommandText =
-                            "INSERT INTO tabs_latest(tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database, access_count) " +
-                            "VALUES($tab,$sid,$fld,$nm,$tg,$ts,1,0,$dsc,$sv,$db,1) " +
+                            "INSERT INTO tabs_latest(tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database, access_count, last_activated_ts) " +
+                            "VALUES($tab,$sid,$fld,$nm,$tg,$ts,1,0,$dsc,$sv,$db,1,$ts) " +
                             "ON CONFLICT(tab_id) DO UPDATE SET " +
                             "  latest_snapshot_id=excluded.latest_snapshot_id, " +
                             "  folder=excluded.folder, " +
@@ -469,7 +477,8 @@ namespace AutoTabOrganiser.Storage
                             "  desc=excluded.desc, " +
                             "  server=excluded.server, " +
                             "  database=excluded.database, " +
-                            "  access_count=tabs_latest.access_count + 1;";
+                            "  access_count=tabs_latest.access_count + 1, " +
+                            "  last_activated_ts=MAX(tabs_latest.last_activated_ts, excluded.ts);";
                         Add(cmd, "$tab", r.TabId);
                         Add(cmd, "$sid", r.Id);
                         Add(cmd, "$fld", r.Folder);
@@ -547,6 +556,26 @@ namespace AutoTabOrganiser.Storage
             }
         }
 
+        /// <summary>
+        /// Record that the user focused this tab. Drives MRU ordering in the Quick Switcher.
+        /// No-op for tabs with no tabs_latest row yet (a brand-new tab gets its row — and its
+        /// initial last_activated_ts — from the first snapshot write).
+        /// </summary>
+        public void TouchActivated(string tabId)
+        {
+            if (string.IsNullOrEmpty(tabId)) return;
+            lock (_gate)
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText = "UPDATE tabs_latest SET last_activated_ts=$ts WHERE tab_id=$t;";
+                    Add(cmd, "$ts", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                    Add(cmd, "$t", tabId);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+        }
+
         public void ClearAllOpenFlags()
         {
             lock (_gate)
@@ -577,7 +606,7 @@ namespace AutoTabOrganiser.Storage
                     cmd.CommandText =
                         "SELECT tab_id, latest_snapshot_id, folder, name, tags_csv, ts, is_open, is_dirty, desc, server, database, " +
                         "       (SELECT MAX(s.ts) FROM snapshots s WHERE s.tab_id = tabs_latest.tab_id AND s.reason = 'saved') AS last_saved_ts, " +
-                        "       access_count, " +
+                        "       access_count, last_activated_ts, " +
                         // Denormalised file-path lookups — saved-reason first (the user's
                         // explicit Save), then the latest snapshot's path as a fallback. These
                         // hop off the (tab_id, reason, ts DESC) and (tab_id, ts DESC) indexes
@@ -610,8 +639,9 @@ namespace AutoTabOrganiser.Storage
                                 Database = rd.IsDBNull(10) ? null : rd.GetString(10),
                                 LastSavedTs = rd.IsDBNull(11) ? (long?)null : rd.GetInt64(11),
                                 AccessCount = rd.IsDBNull(12) ? 0 : rd.GetInt64(12),
-                                SavedFilePath = rd.IsDBNull(13) ? null : rd.GetString(13),
-                                LatestFilePath = rd.IsDBNull(14) ? null : rd.GetString(14),
+                                LastActivatedTs = rd.IsDBNull(13) ? 0 : rd.GetInt64(13),
+                                SavedFilePath = rd.IsDBNull(14) ? null : rd.GetString(14),
+                                LatestFilePath = rd.IsDBNull(15) ? null : rd.GetString(15),
                             });
                         }
                     }
@@ -1227,7 +1257,9 @@ CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCAS
                             cmd.Transaction = tx;
                             cmd.CommandText =
                                 "UPDATE tabs_latest SET access_count = access_count + " +
-                                "(SELECT COALESCE(MAX(access_count),0) FROM tabs_latest WHERE tab_id=$l) " +
+                                "(SELECT COALESCE(MAX(access_count),0) FROM tabs_latest WHERE tab_id=$l), " +
+                                "last_activated_ts = MAX(last_activated_ts, " +
+                                "(SELECT COALESCE(MAX(last_activated_ts),0) FROM tabs_latest WHERE tab_id=$l)) " +
                                 "WHERE tab_id=$w;";
                             Add(cmd, "$w", m.WinnerTabId);
                             Add(cmd, "$l", m.LoserTabId);
@@ -1255,6 +1287,29 @@ CREATE INDEX IF NOT EXISTS ix_tabs_latest_name ON tabs_latest(name COLLATE NOCAS
                     tx.Commit();
                 }
                 return merges.Count;
+            }
+        }
+
+        /// <summary>
+        /// Tags carried by the *latest* snapshot of each tab, with how many tabs carry each —
+        /// most-used first. Drives the Quick Switcher's tag autocomplete. Latest-only keeps the
+        /// counts honest: a tag a tab dropped three edits ago shouldn't still count for it.
+        /// </summary>
+        public List<KeyValuePair<string, int>> GetTagCounts()
+        {
+            lock (_gate)
+            {
+                using (var cmd = _conn.CreateCommand())
+                {
+                    cmd.CommandText =
+                        "SELECT st.tag, COUNT(*) FROM snapshot_tags st " +
+                        "JOIN tabs_latest tl ON tl.latest_snapshot_id = st.snapshot_id " +
+                        "GROUP BY st.tag ORDER BY COUNT(*) DESC, st.tag COLLATE NOCASE;";
+                    var list = new List<KeyValuePair<string, int>>();
+                    using (var rd = cmd.ExecuteReader())
+                        while (rd.Read()) list.Add(new KeyValuePair<string, int>(rd.GetString(0), rd.GetInt32(1)));
+                    return list;
+                }
             }
         }
 

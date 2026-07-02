@@ -413,7 +413,10 @@ namespace AutoTabOrganiser
                 AutoTabOrganiser.UI.QuickSwitcher.QuickSwitcherWindow.Show(
                     _store, _settings, _log,
                     openTabAtText: (tabId, findText) => OpenTabAtTextAsync(tabId, findText, preActiveConnection),
-                    owner: System.Windows.Application.Current?.MainWindow);
+                    owner: System.Windows.Application.Current?.MainWindow,
+                    // Lets the switcher pre-select the *previous* tab (alt-tab reflex) —
+                    // it needs to know which row is the one the user is already sitting in.
+                    currentTabId: _docTracker?.GetActiveTabId());
             }
             catch (Exception ex) { _log.Error("QuickSwitcher show failed", ex); }
         }
@@ -926,6 +929,8 @@ namespace AutoTabOrganiser
 
         private void OnDteBeginShutdown() => IsShuttingDown = true;
 
+        private string _lastTouchedTabId;
+
         private void OnWindowActivated(EnvDTE.Window gotFocus, EnvDTE.Window lostFocus)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
@@ -935,6 +940,21 @@ namespace AutoTabOrganiser
                 // Multi-instance: every open tool window needs its active-tab pin updated,
                 // not just the primary (id=0) one.
                 ForEachToolWindow(w => w?.Control?.SetActiveTabId(tabId));
+
+                // MRU signal for the Quick Switcher. Activation fires for every focus bounce
+                // (tool window ↔ editor), so only touch when the active document actually
+                // changed; the write goes off-thread to keep SQLite IO off the UI thread.
+                if (!string.IsNullOrEmpty(tabId) && tabId != _lastTouchedTabId)
+                {
+                    _lastTouchedTabId = tabId;
+                    var store = _store;
+                    if (store != null)
+                        _ = Task.Run(() =>
+                        {
+                            try { store.TouchActivated(tabId); }
+                            catch (Exception ex) { _log?.Debug("TouchActivated failed: " + ex.Message); }
+                        });
+                }
             }
             catch (Exception ex) { _log?.Debug("WindowActivated handler failed: " + ex.Message); }
         }

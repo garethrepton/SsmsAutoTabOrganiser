@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Threading;
 using AutoTabOrganiser.Settings;
 using AutoTabOrganiser.Storage;
+using AutoTabOrganiser.UI.ViewModels;
 using AutoTabOrganiser.Util;
 
 namespace AutoTabOrganiser.UI.QuickSwitcher
@@ -36,7 +37,8 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
         }
 
         public static void Show(SnapshotStore store, SettingsStore settings, Logger log,
-                                Func<string, string, Task> openTabAtText, Window owner)
+                                Func<string, string, Task> openTabAtText, Window owner,
+                                string currentTabId = null)
         {
             // Re-pressing the shortcut while the popup is open just brings it back to the
             // front rather than stacking a second popup. Under modal ShowDialog this branch
@@ -62,7 +64,7 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                 return Task.CompletedTask;
             };
 
-            var vm = new QuickSwitcherViewModel(store, settings, log, capture);
+            var vm = new QuickSwitcherViewModel(store, settings, log, capture, currentTabId);
             win = new QuickSwitcherWindow(vm) { Owner = owner ?? Application.Current?.MainWindow };
             _activePopup = win;
             try
@@ -126,7 +128,28 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
                     try { DialogResult = false; } catch { }
                     e.Handled = true;
                     break;
+                case Key.Tab:
+                    // Accept the top tag suggestion. Swallow Tab either way — the search box
+                    // is the only focusable control, so focus-cycling is meaningless here.
+                    if (_vm.AcceptFirstTagSuggestion()) FocusSearchBoxAtEnd();
+                    e.Handled = true;
+                    break;
+                default:
+                    // Ctrl+1..9 jumps straight to the Nth visible row (top row and NumPad both).
+                    if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+                    {
+                        int n = DigitFromKey(e.Key);
+                        if (n >= 1) { _vm.ActivateIndex(n - 1); e.Handled = true; }
+                    }
+                    break;
             }
+        }
+
+        private static int DigitFromKey(Key key)
+        {
+            if (key >= Key.D1 && key <= Key.D9) return key - Key.D0;
+            if (key >= Key.NumPad1 && key <= Key.NumPad9) return key - Key.NumPad0;
+            return 0;
         }
 
         private void ScrollSelectedIntoView()
@@ -134,11 +157,39 @@ namespace AutoTabOrganiser.UI.QuickSwitcher
             if (_vm.Selected != null) ResultList.ScrollIntoView(_vm.Selected);
         }
 
+        /// <summary>Programmatic SearchText changes reset the TextBox caret to 0; put it back
+        /// at the end so the user can keep typing.</summary>
+        private void FocusSearchBoxAtEnd()
+        {
+            SearchBox.Focus();
+            SearchBox.CaretIndex = SearchBox.Text?.Length ?? 0;
+        }
+
         // ---- mouse ----
 
         private void OnResult_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
             if (sender is ListBox lb && lb.SelectedItem != null) _vm.ActivateSelected();
+        }
+
+        private void OnTagSuggestion_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is FrameworkElement fe && fe.DataContext is TagSuggestion s)
+            {
+                _vm.AcceptTagSuggestion(s);
+                FocusSearchBoxAtEnd();
+                e.Handled = true;
+            }
+        }
+
+        private void OnTagChip_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (sender is FrameworkElement fe && fe.DataContext is TagChip chip)
+            {
+                _vm.AddTagFilter(chip.Text);
+                FocusSearchBoxAtEnd();
+                e.Handled = true;
+            }
         }
 
         // No Deactivated handler. Modal dialogs don't auto-close on click-away — Esc is the

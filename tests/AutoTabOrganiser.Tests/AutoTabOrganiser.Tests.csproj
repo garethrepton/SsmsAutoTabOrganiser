@@ -26,6 +26,8 @@
     <Compile Include="..\..\src\AutoTabOrganiser\Storage\StoredQueryDuplicateSweeper.cs" Link="Sut\StoredQueryDuplicateSweeper.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Storage\DuplicateTabMergePlanner.cs" Link="Sut\DuplicateTabMergePlanner.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Tree\SearchQueryParser.cs" Link="Sut\SearchQueryParser.cs" />
+    <Compile Include="..\..\src\AutoTabOrganiser\Tree\QuickSwitchRanker.cs" Link="Sut\QuickSwitchRanker.cs" />
+    <Compile Include="..\..\src\AutoTabOrganiser\Storage\SnapshotRecord.cs" Link="Sut\SnapshotRecord.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Tracking\ConnectionExtractor.cs" Link="Sut\ConnectionExtractor.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Metadata\AutoTagger.cs" Link="Sut\AutoTagger.cs" />
     <Compile Include="..\..\src\AutoTabOrganiser\Settings\Settings.cs" Link="Sut\Settings.cs" />

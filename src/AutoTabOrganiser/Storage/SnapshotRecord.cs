@@ -35,6 +35,10 @@ namespace AutoTabOrganiser.Storage
         public string Server { get; set; }       // last-known SSMS server name
         public string Database { get; set; }     // last-known SSMS database name
         public long AccessCount { get; set; }    // total snapshots ever written for this tab (frecency signal)
+        public long LastActivatedTs { get; set; } // last time the user focused the tab; 0 on legacy rows
+
+        /// <summary>MRU timestamp: focus time when known, else last snapshot (legacy rows).</summary>
+        public long EffectiveActivatedTs => LastActivatedTs > Ts ? LastActivatedTs : Ts;
         public string SavedFilePath { get; set; }  // file_path of the most recent saved-reason snapshot (the .sql on disk)
         public string LatestFilePath { get; set; } // file_path of the most recent snapshot of any reason (fallback)
     }

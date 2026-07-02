@@ -44,6 +44,15 @@ namespace AutoTabOrganiser.Tests
         }
 
         [Fact]
+        public void ToSql_TagIsPrefixMatch()
+        {
+            var q = SearchQueryParser.Parse("#pro");
+            var (where, pars) = SearchQueryParser.ToSql(q, 0);
+            where.Should().Contain("st.tag LIKE");
+            pars.Should().ContainSingle(p => (string)p.Value == "pro%");
+        }
+
+        [Fact]
         public void ToSql_CombinesAnd()
         {
             var q = SearchQueryParser.Parse("#prod name:slow");
